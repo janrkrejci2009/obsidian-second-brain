@@ -1,8 +1,9 @@
-"""Soft cost tracking for Grok API calls. No blocking, just visibility."""
+"""Soft cost tracking for Grok and Tavily API calls. No blocking, just visibility."""
 
 from datetime import datetime
 from pathlib import Path
 import json
+import sys
 
 from .config import USAGE_LOG
 
@@ -12,6 +13,12 @@ GROK_PRICING = {
     "grok-4": {"input": 3.00, "output": 15.00},
     "grok-3": {"input": 2.00, "output": 10.00},
 }
+
+# Tavily bills in credits, not tokens. We log the nominal market cost even on the
+# free tier (1000 credits/month) so the usage report reflects the real value the
+# user is consuming - logging $0 while free would make the report misleading.
+TAVILY_CREDIT_USD = 0.008  # pay-as-you-go, as of 2026-06, https://tavily.com/pricing
+TAVILY_CREDIT_WARN = 50  # warn on stderr if a single operation exceeds this many credits
 
 
 def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
@@ -33,6 +40,19 @@ def log_call(command: str, model: str, input_tokens: int, output_tokens: int, co
         entry.update(extra)
     with USAGE_LOG.open("a") as f:
         f.write(json.dumps(entry) + "\n")
+
+
+def log_tavily(command: str, credits: int) -> None:
+    """Log a Tavily credit spend (search or extract). Cost is nominal market value
+    even on the free tier so month_total() reflects real consumption. Warns on
+    stderr when a single operation burns more than TAVILY_CREDIT_WARN credits."""
+    cost = credits * TAVILY_CREDIT_USD
+    log_call(command, "tavily", 0, 0, cost, extra={"credits": credits})
+    if credits > TAVILY_CREDIT_WARN:
+        print(
+            f"[{command}] used {credits} Tavily credits (~${cost:.3f}) in one operation",
+            file=sys.stderr,
+        )
 
 
 def month_total() -> tuple[float, int]:

@@ -76,7 +76,7 @@ def _free_sources(academic: bool):
     from .lib.sources.reddit import RedditSource
     from .lib.sources.wikipedia import WikipediaSource
 
-    return [
+    sources = [
         DuckDuckGoSource(),
         WikipediaSource(),
         HackerNewsSource(),
@@ -84,6 +84,19 @@ def _free_sources(academic: bool):
         ArxivSource(),
         SemanticScholarSource(),
     ]
+
+    # When a Tavily key is present, swap the fragile DuckDuckGo scraper for Tavily
+    # (LLM-optimized web search). The aggregator waits on all sources in parallel
+    # up to a 30s barrier, so keeping the slow/CAPTCHA-prone DuckDuckGo alongside
+    # Tavily would drag every keyed request down to DuckDuckGo's latency. Filter by
+    # type (not index) so it survives future reordering of the list above.
+    if os.environ.get("TAVILY_API_KEY", "").strip():
+        from .lib.sources.tavily import TavilySource
+
+        sources = [s for s in sources if not isinstance(s, DuckDuckGoSource)]
+        sources.insert(0, TavilySource())
+
+    return sources
 
 
 def run_free(topic: str, academic: bool) -> int:

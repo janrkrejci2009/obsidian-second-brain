@@ -12,7 +12,7 @@ Use the obsidian-second-brain skill. Execute `/research-deep [topic]`:
    ```bash
    uv run -m scripts.research.research_deep "<topic>"
    ```
-   The script auto-selects its mode: if `PERPLEXITY_API_KEY` is set it runs the paid pipeline below; otherwise it falls back to free, key-less sources. Pass `--free` to force free mode, or `--academic` (free mode only) to restrict to scholarly sources. Phase 1 (vault scan) is identical in both modes, so OBSIDIAN_VAULT_PATH must be set either way.
+   The script auto-selects its mode: if `PERPLEXITY_API_KEY` is set it runs the paid pipeline below; otherwise it falls back to free, key-less sources. Pass `--free` to force free mode, or `--academic` (free mode only) to restrict to scholarly sources. Phase 1 (vault scan) is identical in both modes, so OBSIDIAN_VAULT_PATH must be set either way. When `TAVILY_API_KEY` is set, the free/key-less track uses Tavily as the preferred web source (replacing DuckDuckGo) and additionally extracts full page text from the top hits via Tavily Extract.
 
 3. **Paid mode** - the script runs a 4-phase pipeline and finishes the work itself:
    - **Phase 1** - vault scan: finds existing notes mentioning the topic (the baseline).
@@ -22,8 +22,8 @@ Use the obsidian-second-brain skill. Execute `/research-deep [topic]`:
 
    Show the synthesis body verbatim, then do the propagation step (step 5).
 
-4. **Free mode** - the script does Phase 1 (vault scan) plus free-source aggregation and prints a JSON block with `"mode": "free-sources-deep"`, containing `vault_baseline_notes` (path, score, excerpt of what the vault already knew), `sources` (fresh external results), `stats`, `warnings`, and an `instruction`. YOU are the synthesizer:
-   - Read the baseline excerpts and the source results. If `stats.success` is false (fewer than 3 sources returned), flag the thin coverage in Open Questions - do not pad.
+4. **Free mode** - the script does Phase 1 (vault scan) plus free-source aggregation and prints a JSON block with `"mode": "free-sources-deep"`, containing `vault_baseline_notes` (path, score, excerpt of what the vault already knew), `sources` (fresh external results), `extracted_content` (full page text keyed by URL for the top hits when `TAVILY_API_KEY` is set - may be empty), `stats`, `warnings`, and an `instruction`. YOU are the synthesizer:
+   - Read the baseline excerpts, the source results, and any `extracted_content` (richer than snippets). If `stats.success` is false (fewer than 3 sources returned), flag the thin coverage in Open Questions - do not pad.
    - Produce a delta with exactly these sections: What's New Since Vault Baseline, What's Confirmed, Contradictions / Updates Needed (name the `[[vault path]]`), Synthesis, Recommended Vault Updates, Open Questions. Every external claim carries a recency marker and source domain; every vault reference uses `[[wikilinks]]`. Never invent facts to fill a section.
    - Save it yourself to `Research/Deep/YYYY-MM-DD - <slug>.md` per `references/ai-first-rules.md` (preamble; frontmatter with `type: research-deep`, `ai-first: true`, `vault-baseline-notes`, and a `sources` list of every result URL verbatim).
    - Show the synthesis to the user, then do the propagation step (step 5).
@@ -40,7 +40,7 @@ Use the obsidian-second-brain skill. Execute `/research-deep [topic]`:
 
 7. If any source/phase fails (Grok unavailable in paid mode, or a free source times out), the run continues with what it has and flags the gap in the synthesis. Surface partial results - don't silently fail. The graceful degradation rule: a partial synthesis is better than no synthesis.
 
-8. Cost note: paid mode makes multiple API calls (Perplexity + Grok), typically $0.20-$0.80 depending on topic depth and gap count; the script logs Grok calls to the usage log automatically. Free mode costs nothing (key-less sources) - synthesis is done by the calling Claude.
+8. Cost note: paid mode makes multiple API calls (Perplexity + Grok), typically $0.20-$0.80 depending on topic depth and gap count; the script logs Grok calls to the usage log automatically. Free mode is otherwise key-less (synthesis is done by the calling Claude); when `TAVILY_API_KEY` is set, the Tavily search + extract calls spend a few Tavily credits (1 per search, 1 per 5 extracted URLs) and are logged to the usage log as `tavily-search` / `tavily-extract`.
 
 ---
 
