@@ -78,6 +78,88 @@ def test_vault_health_json_reports_clean_linked_vault(tmp_path):
     assert payload["counts"]["Orphans"] == 0
 
 
+def _broken_link_messages(vault: Path) -> list[str]:
+    """Run the health check on ``vault`` and return the broken-link messages."""
+    result = subprocess.run(
+        [sys.executable, "scripts/vault_health.py", "--path", str(vault), "--json"],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = _json_from_stdout(result.stdout)
+    return [i["message"] for i in payload["issues"] if i["type"] == "broken_link"]
+
+
+def test_broken_link_scan_resolves_case_and_alias_but_flags_genuine(tmp_path):
+    """The broken-link scan must (a) resolve case-divergent links, (b) resolve
+    links that match a frontmatter alias, and (c) still flag a link whose target
+    does not exist. Mirrors the vault_health false-positive acceptance criteria."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    knowledge = vault / "Knowledge"
+    knowledge.mkdir()
+
+    # Target note with a different filename case and a frontmatter alias.
+    (knowledge / "Curador.md").write_text(
+        "---\n"
+        "type: knowledge\n"
+        "aliases:\n"
+        "  - Mercado Livre Full\n"
+        "---\n"
+        "# Curador\n",
+        encoding="utf-8",
+    )
+
+    # Source note exercising all three cases.
+    (vault / "Notes.md").write_text(
+        "---\n"
+        "type: note\n"
+        "---\n"
+        "# Notes\n\n"
+        "Case-divergent: [[curador]].\n"          # resolves -> Curador.md
+        "Via alias: [[Mercado Livre Full]].\n"     # resolves via alias
+        "Genuinely missing: [[Nonexistent Note]].\n",  # must stay broken
+        encoding="utf-8",
+    )
+
+    messages = _broken_link_messages(vault)
+
+    # (a) case-divergent and (b) alias links must NOT be reported.
+    assert not any("[[curador]]" in m for m in messages), messages
+    assert not any("Mercado Livre Full" in m for m in messages), messages
+    # (c) the genuinely broken link must still be reported.
+    assert any("[[Nonexistent Note]]" in m for m in messages), messages
+
+
+def test_broken_link_scan_excludes_meta_files_by_default(tmp_path):
+    """Meta files (log.md, Reviews/Saúde do Vault*.md) only echo links as content;
+    they must be excluded from the broken-link scan by default, while the same
+    broken link in a regular note is still reported."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    reviews = vault / "Reviews"
+    reviews.mkdir()
+
+    (vault / "log.md").write_text("# Log\n\n[[Ghost Note]] mentioned here.\n", encoding="utf-8")
+    (reviews / "Saúde do Vault 2026-06-07.md").write_text(
+        "---\ntype: review\n---\n# Health\n\n[[Ghost Note]] was flagged.\n",
+        encoding="utf-8",
+    )
+    (vault / "Real Note.md").write_text(
+        "---\ntype: note\n---\n# Real\n\nSee [[Ghost Note]].\n",
+        encoding="utf-8",
+    )
+
+    messages = _broken_link_messages(vault)
+
+    # The meta files are excluded; only the regular note reports the broken link.
+    assert any("Real Note.md" in m for m in messages), messages
+    assert not any("log.md" in m for m in messages), messages
+    assert not any("Saúde do Vault" in m for m in messages), messages
+
+
 def test_substitution_check_passes_on_repo():
     """The repo source must be free of banned substitution characters in prose
     (the CI gate). Characters inside code fences/spans are allowed."""

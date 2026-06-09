@@ -20,6 +20,7 @@ import argparse
 import json
 import re
 from collections import defaultdict
+from fnmatch import fnmatch
 from datetime import date
 from pathlib import Path
 
@@ -31,14 +32,41 @@ DATE_RE = re.compile(r"due:\s*(\d{4}-\d{2}-\d{2})")
 TEMPLATE_RE = re.compile(r"<%.*?%>")
 ALIAS_RE = re.compile(r"^aliases:\s*\n((?:\s+-\s+.+\n?)+)", re.MULTILINE)
 ALIAS_ITEM_RE = re.compile(r"^\s+-\s+(.+)$", re.MULTILINE)
+# Inline forms Obsidian also accepts: `aliases: [a, b]` and `aliases: foo`.
+ALIAS_INLINE_LIST_RE = re.compile(r"^aliases:\s*\[(.+?)\]\s*$", re.MULTILINE)
+ALIAS_SCALAR_RE = re.compile(r"^aliases:\s*([^\[\n].*?)\s*$", re.MULTILINE)
+
+# Default meta files whose wikilinks are content listings (health reports echo
+# every link they audit, the activity log points at notes by name), not real
+# references. Skipping them from the broken-link scan removes the bulk of the
+# false positives. Matched as glob patterns against the vault-relative path.
+DEFAULT_LINK_SCAN_EXCLUDES = ("log.md", "_CLAUDE.md", "Reviews/Saúde do Vault*.md")
+
+
+def _clean_alias(value: str) -> str:
+    return value.strip().strip("\"'").lower()
 
 
 def parse_aliases(frontmatter: str) -> list:
-    """Extract aliases list from frontmatter text."""
+    """Extract aliases from frontmatter, supporting all three Obsidian forms:
+
+    block list (``aliases:`` then ``  - item``), inline list (``aliases: [a, b]``),
+    and a single scalar (``aliases: foo``). Returns lowercased, unquoted values.
+    """
     block = ALIAS_RE.search(frontmatter)
-    if not block:
-        return []
-    return [m.strip().strip('"\'').lower() for m in ALIAS_ITEM_RE.findall(block.group(1))]
+    if block:
+        return [_clean_alias(m) for m in ALIAS_ITEM_RE.findall(block.group(1))]
+
+    inline = ALIAS_INLINE_LIST_RE.search(frontmatter)
+    if inline:
+        return [_clean_alias(part) for part in inline.group(1).split(",") if part.strip()]
+
+    scalar = ALIAS_SCALAR_RE.search(frontmatter)
+    if scalar:
+        value = _clean_alias(scalar.group(1))
+        return [value] if value else []
+
+    return []
 
 
 def load_vault(vault: Path) -> dict:
@@ -194,10 +222,21 @@ def _normalize_dashes(s: str) -> str:
     note with a regular hyphen (`[[2026-05-22 - Learnings Review]]`) should
     still resolve. Normalize both sides before comparison.
     """
-    return s.replace("-", "-").replace("-", "-")
+    return s.replace("\u2014", "-").replace("\u2013", "-")
 
 
-def check_broken_links(notes: dict, vault: Path) -> list:
+def _is_excluded(rel: str, patterns) -> bool:
+    """True if the vault-relative path matches any glob in ``patterns``.
+
+    Matches against both the full relative path and the bare filename so a
+    pattern like ``log.md`` catches the file wherever it lives, while a path
+    pattern like ``Reviews/Saúde do Vault*.md`` scopes to that folder.
+    """
+    name = Path(rel).name
+    return any(fnmatch(rel, pat) or fnmatch(name, pat) for pat in patterns)
+
+
+def check_broken_links(notes: dict, vault: Path, exclude_patterns=()) -> list:
     all_stems = {note["stem"].lower(): rel for rel, note in notes.items()}
     # also index stems with em-dashes normalized to regular hyphens so a
     # wikilink written with `-` still matches a filename written with `-`
@@ -210,14 +249,16 @@ def check_broken_links(notes: dict, vault: Path) -> list:
         for alias in note["aliases"]:
             all_aliases[alias.lower()] = rel
 
-    # Operating manuals contain example wikilinks like [[wikilinks]], [[Related Project]],
-    # [[Links]] as syntax demonstrations, not as real references. Skip them from the
-    # broken-link scan so they don't generate dozens of false positives per scan.
-    SKIP_FROM_LINK_SCAN = {"_CLAUDE.md"}
+    # Operating manuals, the activity log, and prior health reports contain
+    # wikilinks that are syntax demos or content listings (every link they audit
+    # is echoed verbatim), not real references. Skip them so they don't generate
+    # dozens of false positives per scan. Defaults live in
+    # DEFAULT_LINK_SCAN_EXCLUDES; callers can extend via --exclude.
+    patterns = tuple(exclude_patterns)
 
     issues = []
     for rel, note in notes.items():
-        if Path(rel).name in SKIP_FROM_LINK_SCAN:
+        if _is_excluded(rel, patterns):
             continue
         for link in note["links"]:
             link_stem = Path(link).stem.lower() if "/" in link else link.lower()
@@ -260,7 +301,7 @@ def check_template_leftovers(notes: dict) -> list:
     return issues
 
 
-def run_health_check(vault: Path) -> dict:
+def run_health_check(vault: Path, link_scan_excludes=DEFAULT_LINK_SCAN_EXCLUDES) -> dict:
     print(f"🔍 Scanning vault: {vault}\n")
     notes = load_vault(vault)
     print(f"   Found {len(notes)} notes\n")
@@ -271,7 +312,7 @@ def run_health_check(vault: Path) -> dict:
         ("Stale tasks", check_stale_tasks(notes)),
         ("Missing frontmatter", check_missing_frontmatter(notes)),
         ("Empty folders", check_empty_folders(vault)),
-        ("Broken links", check_broken_links(notes, vault)),
+        ("Broken links", check_broken_links(notes, vault, link_scan_excludes)),
         ("Template leftovers", check_template_leftovers(notes)),
     ]
 
@@ -332,6 +373,20 @@ def main():
     parser = argparse.ArgumentParser(description="Obsidian vault health checker")
     parser.add_argument("--path", required=True, help="Path to the vault")
     parser.add_argument("--json", action="store_true", help="Output as JSON (for Claude)")
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        metavar="GLOB",
+        help="Glob (vs vault-relative path or filename) to skip in the broken-link "
+        "scan. Repeatable. Extends the defaults: "
+        f"{', '.join(DEFAULT_LINK_SCAN_EXCLUDES)}. "
+        "Use --no-default-excludes to drop those.",
+    )
+    parser.add_argument(
+        "--no-default-excludes",
+        action="store_true",
+        help="Do not apply the default meta-file excludes from the broken-link scan.",
+    )
     args = parser.parse_args()
 
     vault = Path(args.path).expanduser().resolve()
@@ -339,7 +394,9 @@ def main():
         print(f"❌ Vault not found: {vault}")
         return 1
 
-    result = run_health_check(vault)
+    excludes = () if args.no_default_excludes else DEFAULT_LINK_SCAN_EXCLUDES
+    excludes = tuple(excludes) + tuple(args.exclude or ())
+    result = run_health_check(vault, link_scan_excludes=excludes)
 
     if args.json:
         print(json.dumps(result, indent=2, default=str))
