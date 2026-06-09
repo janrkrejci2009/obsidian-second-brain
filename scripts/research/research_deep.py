@@ -156,6 +156,31 @@ CRITICAL FORMAT RULES - DO NOT DEVIATE:
 """
 
 
+def _extract_top_sources(results: list[dict]) -> dict[str, str]:
+    """Pull full page content for the top web hits via Tavily Extract. Returns
+    {url: raw_content} (possibly empty). No-op unless TAVILY_API_KEY is set."""
+    if not os.environ.get("TAVILY_API_KEY", "").strip():
+        return {}
+    from .lib.web_reader import MAX_EXTRACT_URLS, WebReader
+
+    urls: list[str] = []
+    seen: set[str] = set()
+    for r in results:
+        url = r.get("url")
+        if url and url.startswith("http") and url not in seen:
+            seen.add(url)
+            urls.append(url)
+        if len(urls) >= MAX_EXTRACT_URLS:
+            break
+    if not urls:
+        return {}
+    print(
+        f"[/research-deep] Extracting full content from top {len(urls)} sources via Tavily...",
+        file=sys.stderr,
+    )
+    return WebReader().read(urls)
+
+
 def run_free_deep(topic: str, academic: bool) -> int:
     """Vault scan + free key-less source aggregation, emitted as JSON. The
     calling Claude performs the gap analysis, delta synthesis, note write, and
@@ -193,17 +218,24 @@ def run_free_deep(topic: str, academic: bool) -> int:
         file=sys.stderr,
     )
 
+    # When a Tavily key is present, pull full page content for the top few web
+    # hits so the synthesizer reads beyond snippets. WebReader caps the URL count
+    # and truncates each page, keeping the payload within the model's context.
+    extracted = _extract_top_sources(agg["results"])
+
     payload = {
         "mode": "free-sources-deep",
         "topic": topic,
         "today": today,
         "vault_baseline_notes": baseline_notes,
         "sources": agg["results"],
+        "extracted_content": extracted,
         "stats": stats,
         "warnings": agg["warnings"],
         "instruction": (
             "You are the synthesizer in free mode. Using the vault_baseline_notes (what the vault "
-            "already knew) and the sources (fresh external findings), produce a vault-first delta note "
+            "already knew), the sources (fresh external findings), and extracted_content (full page "
+            "text for the top hits, keyed by URL - may be empty), produce a vault-first delta note "
             "with exactly these sections: What's New Since Vault Baseline, What's Confirmed, "
             "Contradictions / Updates Needed (name the [[vault path]]), Synthesis, Recommended Vault "
             "Updates, Open Questions. Every external claim carries a recency marker and source domain; "

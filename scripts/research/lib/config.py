@@ -30,6 +30,15 @@ PERPLEXITY_API_KEY = lambda: get_required("PERPLEXITY_API_KEY")
 GEMINI_API_KEY = lambda: get_required("GEMINI_API_KEY")
 YOUTUBE_API_KEY = lambda: get_optional("YOUTUBE_API_KEY", "")
 
+# Tavily (optional). Declared here for parity with the other providers, but the
+# free-track source clients (lib/sources/tavily.py, lib/web_reader.py) read these
+# straight from os.environ instead of importing this module - importing config
+# requires OBSIDIAN_VAULT_PATH at load time, and those clients must stay
+# importable without a vault (see test_library_imports_without_vault_path).
+TAVILY_API_KEY = lambda: get_required("TAVILY_API_KEY")
+TAVILY_SEARCH_DEPTH = get_optional("TAVILY_SEARCH_DEPTH", "basic")
+TAVILY_MAX_RESULTS = int(get_optional("TAVILY_MAX_RESULTS", "10"))
+
 GROK_MODEL = get_optional("GROK_MODEL", "grok-4")
 PERPLEXITY_RESEARCH_MODEL = get_optional("PERPLEXITY_RESEARCH_MODEL", "sonar-pro")
 PERPLEXITY_DEEP_MODEL = get_optional("PERPLEXITY_DEEP_MODEL", "sonar-deep-research")
