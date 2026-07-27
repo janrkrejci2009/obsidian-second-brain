@@ -21,21 +21,21 @@ case "$(uname -s)" in
   *) IS_WINDOWS=0 ;;
 esac
 
-# Link commands into ~/.claude/commands/ (copy on Windows without Developer Mode)
+# Link commands into ~/.claude/commands/ (copy on Windows without Developer Mode).
+# Always re-links/re-copies (idempotent) so re-running after a git pull picks up
+# new command content instead of leaving a stale symlink or copy in place.
 echo "Installing slash commands..."
 COMMANDS_COPIED=0
 for file in "$SKILL_DIR/commands/"*.md; do
   name=$(basename "$file")
   dest="$COMMANDS_DIR/$name"
-  if [ -e "$dest" ] || [ -L "$dest" ]; then
-    echo "  skipping $name (already exists)"
-  elif [ "$IS_WINDOWS" -eq 0 ]; then
-    ln -s "$file" "$dest"
+  if [ "$IS_WINDOWS" -eq 0 ]; then
+    ln -sf "$file" "$dest"
     echo "  linked $name"
-  elif MSYS=winsymlinks:nativestrict ln -s "$file" "$dest" 2>/dev/null; then
+  elif MSYS=winsymlinks:nativestrict ln -sf "$file" "$dest" 2>/dev/null; then
     echo "  linked $name"
   else
-    cp "$file" "$dest"
+    cp -f "$file" "$dest"
     COMMANDS_COPIED=1
     echo "  installed $name"
   fi
