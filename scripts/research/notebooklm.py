@@ -26,7 +26,6 @@ import sys
 import tempfile
 import time
 from datetime import datetime
-from pathlib import Path
 
 from google import genai
 from google.genai import types
@@ -109,6 +108,7 @@ date: {date}
 type: research-notebooklm
 tags:
   - research
+  - research-notebooklm
   - notebooklm
   - source-grounded
 ai-first: true
@@ -138,7 +138,8 @@ Source-grounded synthesis on "{topic}" via Gemini File Search (model: {model}). 
 
 def safe_display_name(path: str) -> str:
     """Strip non-ASCII so display_name survives HTTP header encoding."""
-    s = path.replace("-", " - ").replace("-", "-")
+    # \u2014/\u2013 escapes keep this sweep-proof (see #63): em-dash -> " - ", en-dash -> "-"
+    s = path.replace("\u2014", " - ").replace("\u2013", "-")
     s = s.encode("ascii", "replace").decode("ascii")
     return s[:200]
 

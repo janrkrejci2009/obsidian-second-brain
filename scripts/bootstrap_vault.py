@@ -32,8 +32,9 @@ Options:
 
 import argparse
 import sys
-from pathlib import Path
 from datetime import date
+from pathlib import Path
+from typing import NamedTuple
 
 # Force UTF-8 stdout/stderr so emoji print statements work on Windows (cp1252).
 for _stream in (sys.stdout, sys.stderr):
@@ -74,6 +75,17 @@ WIKI_FOLDERS = {
 # Each preset declares its folder list, kanban boards, _CLAUDE.md folder map,
 # Home dashboard body, and optional extra seed files.
 
+class Board(NamedTuple):
+    """A kanban board definition.
+
+    Was a bare (name, columns) tuple. Three call sites read it positionally as
+    b[0] and a fourth destructured it, so reordering or extending the tuple
+    would break the three silently, with no type error to catch it.
+    """
+    name: str
+    columns: list[str]
+
+
 PRESETS = {
     "default": {
         "purpose": "Life OS - work, personal, finances",
@@ -96,7 +108,7 @@ PRESETS = {
             "Projects", "Boards", "Knowledge", "Reviews",
             "Templates", "_trash",
         ],
-        "boards": [("OKRs", ["🎯 OKRs", "📅 Quarterly", "📋 Weekly", "✅ Done"])],
+        "boards": [Board("OKRs", ["🎯 OKRs", "📅 Quarterly", "📋 Weekly", "✅ Done"])],
         "kanban_columns": ["🎯 OKRs", "📅 Quarterly", "📋 Weekly", "✅ Done"],
     },
     "builder": {
@@ -106,7 +118,7 @@ PRESETS = {
             "Boards", "Knowledge", "Tasks", "Ideas",
             "Templates", "_trash",
         ],
-        "boards": [("Engineering", ["📥 Backlog", "🏃 Sprint", "🔨 In Progress", "✅ Done"])],
+        "boards": [Board("Engineering", ["📥 Backlog", "🏃 Sprint", "🔨 In Progress", "✅ Done"])],
         "kanban_columns": ["📥 Backlog", "🏃 Sprint", "🔨 In Progress", "✅ Done"],
     },
     "creator": {
@@ -116,7 +128,7 @@ PRESETS = {
             "Ideas", "Audience", "Publishing",
             "Boards", "Templates", "_trash",
         ],
-        "boards": [("Pipeline", ["💡 Ideas", "✏️ Drafts", "📅 Scheduled", "✅ Published"])],
+        "boards": [Board("Pipeline", ["💡 Ideas", "✏️ Drafts", "📅 Scheduled", "✅ Published"])],
         "kanban_columns": ["💡 Ideas", "✏️ Drafts", "📅 Scheduled", "✅ Published"],
     },
     "researcher": {
@@ -126,14 +138,34 @@ PRESETS = {
             "Synthesis", "Reading Queue", "Projects", "People",
             "Boards", "Templates", "_trash",
         ],
-        "boards": [("Research", ["📚 Reading", "🔬 Processing", "🧬 Synthesized", "✅ Done"])],
+        "boards": [Board("Research", ["📚 Reading", "🔬 Processing", "🧬 Synthesized", "✅ Done"])],
         "kanban_columns": ["📚 Reading", "🔬 Processing", "🧬 Synthesized", "✅ Done"],
     },
 }
 
 
-def write(path: Path, content: str):
+FORCE = False  # set by --force; write() never clobbers user files without it
+
+
+def write(path: Path, content: str, force: bool | None = None):
+    """Create a file, refusing to overwrite existing content unless forced.
+
+    Bootstrap must be safe to run on a non-empty vault: silently replacing a
+    hand-made Home.md or _CLAUDE.md is data loss, not setup (stress-test fix
+    23/24 - the audit verified the loss).
+
+    `force` defaults to the module-level FORCE that main() sets from --force.
+    Passing it explicitly is what makes this function testable in-process: every
+    write in this file funnels through here, and reading a global meant the only
+    way to exercise both branches was a fresh subprocess per scenario, which is
+    why test_front_door and test_showroom shell out. Existing call sites are
+    unchanged.
+    """
+    force = FORCE if force is None else force
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and not force:
+        print(f"  = kept existing {path} (re-run with --force to overwrite)")
+        return
     path.write_text(content.strip() + "\n", encoding="utf-8")
     print(f"  ✓ {path}")
 
@@ -254,7 +286,7 @@ def claude_md_personal(name: str, preset_key: str, preset: dict, jobs: list, vau
             "- **Mentions Log:** `Mentions/Mentions Log.md`"
         )
     else:
-        board_lines = [f"- **{b[0]} Board:** `Boards/{b[0]}.md`" for b in preset["boards"]]
+        board_lines = [f"- **{b.name} Board:** `Boards/{b.name}.md`" for b in preset["boards"]]
         key_files = "- **Dashboard:** `Home.md`\n" + "\n".join(board_lines)
 
     return f"""# Claude Operating Manual - {name}'s Vault
@@ -350,7 +382,7 @@ Done item:
 
 def claude_md_assistant(operator: str, subject: str, preset_key: str, preset: dict, vault_path: Path) -> str:
     folder_table = folder_map_table(preset["folders"])
-    board_lines = [f"- **{b[0]} Board:** `Boards/{b[0]}.md`" for b in preset["boards"]]
+    board_lines = [f"- **{b.name} Board:** `Boards/{b.name}.md`" for b in preset["boards"]]
     key_files = "- **Dashboard:** `Home.md`\n" + ("\n".join(board_lines) if board_lines else "")
 
     return f"""# Claude Operating Manual - {subject}'s Vault
@@ -458,10 +490,11 @@ def render_home(name: str, preset_key: str, preset: dict, jobs: list, mode: str,
             "|------|------|--------|\n"
             f"| [[Boards/{primary_job}\\|📋 Work Board]] | [[Goals/{YEAR} Goals\\|🎯 Goals]] | [[Templates/\\|📝 Templates]] |\n"
             "| [[Boards/Personal\\|📋 Personal]] | [[Finances/Income Streams\\|💵 Income]] | [[Mentions/Mentions Log\\|💬 Mentions]] |\n"
-            "| [[Projects/\\|🔨 Projects]] | [[Health/Health Dashboard\\|🏋️ Health]] | [[People/\\|👥 People]] |"
+            "| [[Projects/\\|🔨 Projects]] | [[Health/Health Dashboard\\|🏋️ Health]] | [[People/\\|👥 People]] |\n"
+            "| [[Content/Content Calendar\\|📅 Content]] | [[Ideas/\\|💡 Ideas]] | [[Reviews/\\|📆 Reviews]] |"
         )
     else:
-        board_links = " · ".join(f"[[Boards/{b[0]}\\|📋 {b[0]}]]" for b in preset["boards"])
+        board_links = " · ".join(f"[[Boards/{b.name}\\|📋 {b.name}]]" for b in preset["boards"])
         folder_links = " · ".join(f"[[{f.split('/')[0]}/\\|📁 {f.split('/')[0]}]]"
                                   for f in preset["folders"]
                                   if "/" not in f and f not in ("Boards", "Templates", "_trash"))
@@ -825,6 +858,23 @@ SORT date DESC
 ```
 """)
 
+        # Home.md's nav links this note - a fresh vault must not ship a
+        # dangling wikilink (stress-test fix 9/24: the showroom rule).
+        write(vault / "Finances/Income Streams.md", f"""---
+date: {TODAY}
+tags:
+  - finance
+---
+
+# Income Streams
+
+Track every income source here - salary, side business, one-off invoices.
+
+| Stream | Type | Status |
+|--------|------|--------|
+| Salary | monthly | active |
+""")
+
         write(vault / "Health/Health Dashboard.md", f"""---
 date: {TODAY}
 tags:
@@ -913,7 +963,7 @@ Decision record (ADR). Captures the context, options considered, the decision, a
 
 ## Consequences
 """)
-        write(vault / "Templates/OKR.md", f"""---
+        write(vault / "Templates/OKR.md", """---
 date: <% tp.date.now("YYYY-MM-DD") %>
 type: okr
 tags:
@@ -1192,6 +1242,16 @@ def bootstrap(vault: Path, name: str, preset_key: str, mode: str, subject: str,
     if not (vault / ".obsidian/app.json").exists():
         write(vault / ".obsidian/app.json", "{}")
 
+    # ── Showroom rule ─────────────────────────────────────────────────────────
+    # A fresh vault must pass its own health check with zero findings. Scaffold
+    # folders that end up empty get an invisible .gitkeep so vault_health's
+    # empty-folder alarm stays honest for folders that BECOME empty later
+    # (stress-test fix 9/24).
+    for f in folders:
+        d = vault / f
+        if d.is_dir() and not any(d.iterdir()):
+            (d / ".gitkeep").write_text("", encoding="utf-8")
+
     print(f"\n✅ Vault bootstrapped at: {vault}")
     print("\n📋 Recommended Obsidian plugins:")
     print("   • Bases     - powers the Bases/ live views (core plugin, enable in Settings)")
@@ -1202,6 +1262,13 @@ def bootstrap(vault: Path, name: str, preset_key: str, mode: str, subject: str,
     print("\n🤖 Claude MCP config:")
     print(f'   "obsidian-vault": {{"command": "npx", "args": ["-y", "mcp-obsidian", "{vault}"]}}')
     print("\n🧠 _CLAUDE.md is ready - Claude will read it automatically on every session.")
+    # The one moment the reader has definitely just got value: their vault
+    # exists and they can see what was created. Once per machine, never in CI.
+    try:
+        from star_prompt import maybe_ask
+        maybe_ask(f"Your vault is set up at {vault}.")
+    except Exception:
+        pass  # never let this break a bootstrap that otherwise succeeded
 
 
 def main():
@@ -1215,21 +1282,22 @@ def main():
     parser.add_argument("--subject", default="", help="Subject name (required when --mode=assistant)")
     parser.add_argument("--jobs", default="Work", help="Comma-separated job/company names (default preset only)")
     parser.add_argument("--no-sidebiz", action="store_true", help="Omit side business module (default preset only)")
+    parser.add_argument("--force", action="store_true",
+                        help="Overwrite existing files (default: keep anything already in the vault)")
     args = parser.parse_args()
+    global FORCE
+    FORCE = args.force
 
     if args.mode == "assistant" and not args.subject:
         parser.error("--subject is required when --mode=assistant")
 
     vault = Path(args.path).expanduser().resolve()
-    if vault.exists() and any(p for p in vault.iterdir() if p.name != ".obsidian"):
-        print(f"⚠️  {vault} already exists and is not empty.")
-        try:
-            confirm = input("Continue anyway? This may overwrite files. [y/N] ").strip().lower()
-        except EOFError:
-            confirm = "n"
-        if confirm != "y":
-            print("Aborted.")
-            sys.exit(1)
+    if vault.exists() and any(vault.iterdir()):
+        if FORCE:
+            print(f"⚠️  {vault} is not empty and --force is set: existing files WILL be overwritten.")
+        else:
+            print(f"ℹ️  {vault} is not empty: existing files will be KEPT (re-run with --force to overwrite).")
+
 
     jobs = [j.strip() for j in args.jobs.split(",") if j.strip()]
     bootstrap(vault, args.name, args.preset, args.mode, args.subject,

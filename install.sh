@@ -15,26 +15,64 @@ echo "Installing obsidian-second-brain..."
 mkdir -p "$COMMANDS_DIR"
 mkdir -p "$SKILLS_DIR"
 
-# Link or copy commands to ~/.claude/commands/
+# Detect platform once
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1 ;;
+  *) IS_WINDOWS=0 ;;
+esac
+
+# Link commands into ~/.claude/commands/ (copy on Windows without Developer Mode)
 echo "Installing slash commands..."
+COMMANDS_COPIED=0
 for file in "$SKILL_DIR/commands/"*.md; do
   name=$(basename "$file")
   dest="$COMMANDS_DIR/$name"
-  if [ -f "$dest" ]; then
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
     echo "  skipping $name (already exists)"
+  elif [ "$IS_WINDOWS" -eq 0 ]; then
+    ln -s "$file" "$dest"
+    echo "  linked $name"
+  elif MSYS=winsymlinks:nativestrict ln -s "$file" "$dest" 2>/dev/null; then
+    echo "  linked $name"
   else
     cp "$file" "$dest"
+    COMMANDS_COPIED=1
     echo "  installed $name"
   fi
 done
+if [ "$COMMANDS_COPIED" -eq 1 ]; then
+  echo "  (symlinks require Developer Mode - commands were copied; run update.sh to refresh)"
+fi
 
 # Link skill into ~/.claude/skills/
 SKILL_LINK="$SKILLS_DIR/obsidian-second-brain"
 if [ -e "$SKILL_LINK" ]; then
   echo "Skill already linked at $SKILL_LINK"
-else
+elif [ "$IS_WINDOWS" -eq 0 ]; then
   ln -s "$SKILL_DIR" "$SKILL_LINK"
   echo "Skill linked at $SKILL_LINK"
+else
+  if MSYS=winsymlinks:nativestrict ln -s "$SKILL_DIR" "$SKILL_LINK" 2>/dev/null; then
+    echo "Skill linked at $SKILL_LINK"
+  else
+    echo "Symlink failed (requires Developer Mode). For the cleanest setup,"
+    echo "clone the repo directly into the skills folder:"
+    echo "  git clone https://github.com/eugeniughelbur/obsidian-second-brain ~/.claude/skills/obsidian-second-brain"
+    echo "Then re-run install.sh from that location."
+  fi
+fi
+
+# Register the SessionStart context hook so slash commands can locate the skill's
+# bundled scripts. The plugin install wires this up automatically via its manifest;
+# the skill install needs it in settings.json. Idempotent, safe to re-run.
+echo "Registering session context hook..."
+if command -v python3 >/dev/null 2>&1; then
+  python3 "$SKILL_DIR/scripts/setup_settings_hook.py"
+elif command -v python >/dev/null 2>&1; then
+  python "$SKILL_DIR/scripts/setup_settings_hook.py"
+else
+  echo "  python not found - add this SessionStart hook to ~/.claude/settings.json manually:"
+  echo "    python3 $HOME/.claude/skills/obsidian-second-brain/hooks/load_vault_context.py"
 fi
 
 # ── Research toolkit setup (optional) ──────────────────────────────

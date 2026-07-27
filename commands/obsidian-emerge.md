@@ -2,6 +2,8 @@
 description: Surface unnamed patterns from your recent notes - recurring themes, hidden connections, and conclusions you haven't explicitly stated
 category: thinking
 triggers_en: ["find patterns", "what is emerging", "surface themes", "unnamed patterns"]
+triggers_es: ["busca patrones", "qué está emergiendo", "saca a la luz los temas recurrentes", "patrones que no he nombrado"]
+triggers_pt: ["encontre padrões", "o que está emergindo", "mostre temas", "padrões sem nome"]
 ---
 
 Use the obsidian-second-brain skill. Execute `/obsidian-emerge $ARGUMENTS`:
@@ -14,14 +16,14 @@ The optional argument is a timeframe (e.g., "2 weeks", "this month"). Default: l
    - **Daily notes agent**: read all daily notes in the date range, extract recurring topics, complaints, observations, and energy patterns
    - **Dev logs agent**: read all dev logs in the range, extract repeated blockers, tools mentioned, architectural patterns
    - **Decisions agent**: read Key Decisions sections across project notes, look for directional trends
-   - **Ideas agent**: read Ideas/ notes created in the range, look for thematic clusters
+   - **Ideas agent**: read notes created in the range in the ideas/concepts folder (resolved per `references/folder-map.md` - wiki-style `wiki/concepts/`, Obsidian-style `Ideas/`), look for thematic clusters
 4. Merge results and identify:
    - **Recurring themes**: topics that appeared 3+ times without being named as a priority
    - **Emotional patterns**: what energizes vs. drains the user (based on language and context)
    - **Unnamed conclusions**: things the notes imply but never state outright (e.g., "you've mentioned onboarding friction in 4 different projects - this is a systemic issue, not a project-specific one")
    - **Emerging directions**: where the vault suggests the user is heading, even if they haven't committed to it
 5. Present findings as a structured "Pattern Report" - each pattern gets: the evidence (cited notes), the interpretation, and a suggested action
-6. Offer to save the pattern report to `Ideas/` or a relevant project note
+6. Offer to save the pattern report to the ideas/concepts folder (resolved per `references/folder-map.md` - wiki-style `wiki/concepts/`, Obsidian-style `Ideas/`) or a relevant project note; standalone reports use `type: emerge` (thinking-tool schema in `references/ai-first-rules.md`), named `YYYY-MM-DD - emerge.md`
 7. Log a brief summary in today's daily note
 
 The goal is insight the user cannot see themselves. Do not restate what they already know - surface what they haven't named yet.

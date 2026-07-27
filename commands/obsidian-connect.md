@@ -2,6 +2,8 @@
 description: Bridge two unrelated domains using your vault's link graph - forces creative friction to spark new ideas
 category: thinking
 triggers_en: ["connect domains", "cross-pollinate", "bridge ideas", "find an unexpected link"]
+triggers_es: ["conecta estos dos temas", "cruza ideas de distintos mundos", "tiende un puente entre ideas", "busca una conexión inesperada"]
+triggers_pt: ["conecte domínios", "cruze ideias", "crie pontes entre ideias", "encontre uma ligação inesperada"]
 ---
 
 Use the obsidian-second-brain skill. Execute `/obsidian-connect $ARGUMENTS`:
@@ -22,7 +24,7 @@ Two arguments required: the two topics, domains, or note names to connect. If on
    - **Transfer opportunities**: what works in A that could be applied to B
    - **Collision ideas**: new concepts that only exist at the intersection of both
 6. Present 3-5 specific, actionable connections - not vague analogies but concrete ideas the user could act on
-7. Offer to save the best connections to `Ideas/` with links to both source domains
+7. Offer to save the best connections to the ideas folder (resolved per `references/folder-map.md` - wiki-style `wiki/concepts/`, Obsidian-style `Ideas/`) with links to both source domains
 8. Log the connection exercise in today's daily note
 
 The value is in unexpected links. If the connection is obvious, dig deeper. The best output makes the user say "I never thought of it that way."

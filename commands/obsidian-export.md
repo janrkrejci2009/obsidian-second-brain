@@ -1,19 +1,21 @@
 ---
-description: Export a clean structured snapshot of the vault that any agent or tool can consume - flat JSON or markdown index
+description: Export a clean structured snapshot of the vault that any agent or tool can consume - flat JSON, markdown index, or an OKF (Open Knowledge Format) bundle
 category: meta
 triggers_en: ["export vault", "snapshot vault", "dump vault", "vault export"]
+triggers_es: ["exporta el vault", "haz una foto del vault", "vuelca el vault", "exportación del vault"]
+triggers_pt: ["exporte o vault", "gere um snapshot do vault", "despeje o vault", "exportação do vault"]
 ---
 
 Use the obsidian-second-brain skill. Execute `/obsidian-export $ARGUMENTS`:
 
-The optional argument is the format: `json` (default) or `markdown`. 
+The optional argument is the format: `json` (default), `markdown`, or `okf`.
 
 1. Read `_CLAUDE.md` first if it exists in the vault root
 2. Read `index.md` for the full vault catalog
 
 3. Build a structured export by scanning the vault:
 
-   **For each note in wiki/**, extract:
+   **For each note in every note folder present**, enumerating the vault's top-level note folders per `references/folder-map.md` (wiki-style: `wiki/`; Obsidian-style: `People/`, `Projects/`, `Ideas/`, `Knowledge/`, `Daily/`, ... whatever exists on disk), extract:
    - `path`: file path relative to vault root
    - `title`: note title (first heading or filename)
    - `type`: from frontmatter tags (entity, concept, project, daily, etc.)
@@ -30,16 +32,16 @@ The optional argument is the format: `json` (default) or `markdown`.
    **JSON** (default):
    ```json
    {
-     "vault": "Eugeniu's Vault",
+     "vault": "Example Vault",
      "exported": "2026-04-07",
      "total_notes": 238,
      "notes": [
        {
-         "path": "wiki/entities/Eric Siu.md",
-         "title": "Eric Siu",
+         "path": "wiki/entities/Ada Lovelace.md",
+         "title": "Ada Lovelace",
          "type": "entity",
-         "summary": "CEO of Single Grain...",
-         "links_to": ["Single Grain", "Centralized API Gateway"],
+         "summary": "CEO of Currentscale Labs...",
+         "links_to": ["Currentscale Labs", "Tide Gateway"],
          "tags": ["entity", "person"]
        }
      ]
@@ -50,6 +52,12 @@ The optional argument is the format: `json` (default) or `markdown`.
    **Markdown**:
    A flat markdown file with every note listed with its metadata and summary.
    Save to `_export/vault-snapshot.md`
+
+   **OKF** (Open Knowledge Format - Google Cloud's vendor-neutral "folders of markdown" standard): do NOT build this by hand. Run the deterministic exporter from the skill root (its absolute path was given at session start as **Skill root**; substitute it for `SKILL_ROOT`):
+   ```bash
+   uv run --directory "SKILL_ROOT" scripts/export_okf.py --path "<vault path from _CLAUDE.md>"
+   ```
+   It writes an OKF v0.1 bundle to `_export/okf/`: every note becomes an OKF concept doc (frontmatter `type` [required] / `title` / `description` / `resource` [only when the note has a real source URL] / `tags` / ISO-8601 `timestamp`; `[[wikilinks]]` converted to relative-path markdown links), plus a generated `index.md` (progressive disclosure) and a copied `log.md`. The vault's richer AI-first body (incl. the `## For future Claude` preamble) is preserved - OKF is minimally opinionated, so the extra content rides along. This makes the vault "OKF v0.1 compatible" without changing how it works natively.
 
 5. Append to the operation log: if `Logs/` exists write `**HH:MM** - export | Vault snapshot exported (format, N notes)` to `Logs/YYYY-MM-DD.md`; otherwise append `## [YYYY-MM-DD] export | Vault snapshot exported (format, N notes)` to `log.md`
 

@@ -2,6 +2,8 @@
 description: Convene a panel of distinct perspectives on a decision - one independent verdict per lens, then a synthesis. A multi-persona complement to /obsidian-challenge
 category: thinking
 triggers_en: ["convene a panel", "advisor panel", "get multiple perspectives on", "panel review", "what would the experts say about"]
+triggers_es: ["convoca un panel", "panel de asesores", "dame varias perspectivas sobre esto", "revisión en panel", "qué dirían los expertos sobre esto"]
+triggers_pt: ["convoque um painel", "painel de especialistas", "obtenha múltiplas perspectivas sobre", "revisão em painel", "o que os especialistas diriam sobre"]
 ---
 
 Use the obsidian-second-brain skill. Execute `/obsidian-panel [decision or question]`:
@@ -14,7 +16,7 @@ Pressure-tests a decision from several independent angles at once. Where `/obsid
    - Otherwise, use 4 generic lenses: the skeptic (what breaks this), the user/customer (who is served or hurt), the operator (can this actually be run/maintained), and the long-game (what does this look like in a year).
 3. For EACH panelist, write an independent verdict: their position, the strongest reason behind it, and what would change their mind. Keep them genuinely distinct - do not let them converge prematurely.
 4. Write a synthesis: where the panel agreed, where it split, and a recommended decision with its main risk. Do not hide the disagreement - the split is the most useful output.
-5. Save to `wiki/concepts/YYYY-MM-DD - panel - <slug>.md` (`type: synthesis`, tagged `[thinking, panel]`), linking any `[[Advisors/...]]` notes and `[[entities/projects]]` the decision touches. Cross-link from today's daily note.
+5. Save to the concepts folder (resolved per `references/folder-map.md` - wiki-style `wiki/concepts/`, Obsidian-style `Ideas/`) as `YYYY-MM-DD - panel - <slug>.md` (`type: synthesis`, tagged `[synthesis, thinking, panel]`), linking any `[[Advisors/...]]` notes and `[[entities/projects]]` the decision touches. Cross-link from today's daily note.
 
 ---
 

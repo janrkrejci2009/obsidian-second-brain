@@ -22,7 +22,10 @@
 #
 # Scope:
 #   - Only inspects files inside OBSIDIAN_VAULT_PATH (env var)
-#   - Skips raw/, templates/, _export/, .obsidian/, and any path containing
+#   - Skips raw/, templates/, _export/, .obsidian/, boards/ (kanban exception:
+#     an H2 preamble renders as a phantom column), vault-surface files
+#     (_CLAUDE.md, Home.md, index.md, log.md, catchup.md, per-day Logs/ -
+#     operating surfaces, not knowledge notes), and any path containing
 #     /.git/ - those are system/template paths, not first-class notes
 #   - Skips any file not ending in .md
 #
@@ -52,7 +55,7 @@ esac
 
 # Skip non-first-class paths
 case "$FILE" in
-  */raw/*|*/templates/*|*/_export/*|*/.obsidian/*|*/.git/*|*/.trash/*)
+  */raw/*|*/templates/*|*/_export/*|*/.obsidian/*|*/.git/*|*/.trash/*|*/boards/*|*/Boards/*|*/Logs/*|*/_CLAUDE.md|*/Home.md|*/index.md|*/log.md|*/catchup.md)
     exit 0 ;;
 esac
 
@@ -145,6 +148,45 @@ PYEOF
     while IFS= read -r hit; do
       [[ -n "$hit" ]] && WARNINGS+=("$hit")
     done <<< "$NON_ASCII_HITS"
+  fi
+fi
+
+# ── Check 6: secrets never belong in a vault note ────────────────────────────
+# High-precision patterns only (a false positive here trains people to ignore
+# the hook). Catches real key material, not the word "password" in prose.
+if command -v python3 >/dev/null 2>&1; then
+  SECRET_HITS=$(python3 - "$FILE" <<'PYEOF'
+import re
+import sys
+
+PATTERNS = [
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "private key block"),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "AWS access key id"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{24,}\b"), "sk- API key"),
+    (re.compile(r"\bghp_[A-Za-z0-9]{36}\b"), "GitHub personal token"),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}\b"), "GitHub fine-grained token"),
+    (re.compile(r"\bxox[bpars]-[A-Za-z0-9-]{10,}\b"), "Slack token"),
+    (re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "Google API key"),
+    (re.compile(r"(?i)\b(?:password|passwd)\s*[:=]\s*['\"][^'\"\s]{8,}['\"]"), "quoted password assignment"),
+]
+
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for lineno, line in enumerate(fh, 1):
+            for pat, label in PATTERNS:
+                if pat.search(line):
+                    print(f"    line {lineno}: looks like a {label} - secrets never belong in vault notes; keep them in ~/.config/obsidian-second-brain/.env or a password manager and reference them by NAME only")
+                    break
+except OSError:
+    pass
+PYEOF
+  )
+  if [[ -n "$SECRET_HITS" ]]; then
+    WARNINGS+=("$BASENAME appears to contain secret material:")
+    while IFS= read -r hit; do
+      [[ -n "$hit" ]] && WARNINGS+=("$hit")
+    done <<< "$SECRET_HITS"
   fi
 fi
 

@@ -2,17 +2,19 @@
 description: Web research with citations - Perplexity Sonar when an API key is set, free key-less sources (Wikipedia, HackerNews, arXiv, Reddit, and more) otherwise. Deep dossier with summary, facts, timeline, players, contrarian views, open questions
 category: research
 triggers_en: ["research this", "look up", "find information about", "perplexity research"]
+triggers_es: ["investiga esto", "búscalo", "busca información sobre", "investigación con perplexity"]
+triggers_pt: ["pesquise isto", "procure", "encontre informações sobre", "pesquisa perplexity"]
 ---
 
 Use the obsidian-second-brain skill. Execute `/research [topic]`:
 
 1. Resolve the topic from the user's argument. Multi-word topics fine ("AI memory tools", "vector databases for RAG"). If no topic, ask: "What topic should I research?"
 
-2. Run the Python command from the repo root (`~/Projects/personal/obsidian-second-brain/`):
+2. Run the script from the skill root (its absolute path was given at session start as **Skill root**; substitute it for `SKILL_ROOT`):
    ```bash
-   uv run -m scripts.research.research "<topic>"
+   uv run --directory "SKILL_ROOT" -m scripts.research.research "<topic>"
    ```
-   The script auto-selects its mode: if `PERPLEXITY_API_KEY` is set it uses Perplexity Sonar (paid); otherwise it falls back to free, key-less sources. Pass `--free` to force free mode even when a key is set, or `--academic` (free mode only) to restrict to scholarly sources (arXiv, Semantic Scholar, OpenAlex, CrossRef). When `TAVILY_API_KEY` is set, Tavily becomes the preferred web source in the free/key-less aggregation track, replacing the fragile DuckDuckGo scraper; without it the existing sources are used unchanged.
+   The script auto-selects its mode: if `PERPLEXITY_API_KEY` is set it uses Perplexity Sonar (paid); otherwise it falls back to free, key-less sources. Pass `--free` to force free mode even when a key is set, or `--academic` (free mode only) to restrict to scholarly sources (arXiv, Semantic Scholar, OpenAlex, CrossRef). If `TAVILY_API_KEY` or `BRAVE_API_KEY` is set, that source joins the free-mode pool as an extra web source (Tavily also honors `TAVILY_SEARCH_DEPTH`/`TAVILY_MAX_RESULTS`); without them the pool stays fully key-less - never require either.
 
 3. Handle the output by mode:
    - **Paid mode** - the script prints a finished dossier (Summary, Key Facts with recency markers, Timeline, Key Players, Contrarian Views, Further Reading, Open Questions, Sources) and saves the AI-first note itself to `Research/Web/` plus a log line. Show the dossier verbatim, then surface the saved file path. Nothing else to do.

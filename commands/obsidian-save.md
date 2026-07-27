@@ -1,7 +1,10 @@
 ---
 description: Save everything worth keeping from this conversation to the vault
 category: vault
+trigger-mode: proactive
 triggers_en: ["save this", "save the conversation", "save to vault", "obsidian save"]
+triggers_es: ["guarda esto", "guarda la conversación", "guarda al vault"]
+triggers_pt: ["salve isto", "salve a conversa", "salve no vault", "obsidian save"]
 ---
 
 Use the obsidian-second-brain skill. Execute `/obsidian-save`:
@@ -11,7 +14,7 @@ Use the obsidian-second-brain skill. Execute `/obsidian-save`:
 3. Group items by type: people, projects, tasks, decisions, ideas, deals, content
 4. Spawn parallel subagents - one per group - so all note types are handled simultaneously:
    - **People agent**: search for each person, create or update notes, log interactions
-   - **Projects agent**: search for each project, create or update notes
+   - **Projects agent**: search for each project, create or update notes. If the conversation was a substantial dev/work session (code written, problems solved, decisions made on a project), also write a dev-log note for it - the same artifact `/obsidian-log` produces - to the logs folder (resolved per `references/folder-map.md`: wiki-style `wiki/logs/`, Obsidian-style `Dev Logs/`), named `YYYY-MM-DD - Project Name.md`, and link it from the project's Recent Activity and today's daily note. This is why `/obsidian-save` absorbs `/obsidian-log`: a full save already captures the work, so you do not need to run both. If a dev-log for this project and date already exists, update it rather than creating a second.
    - **Tasks agent**: parse tasks, add to the right kanban columns
    - **Decisions agent**: find relevant project notes, append to Key Decisions sections
    - **Ideas agent**: search Ideas/ for related notes, create or append
@@ -19,7 +22,7 @@ Use the obsidian-second-brain skill. Execute `/obsidian-save`:
      - **Hooks, angles, contrarian takes** → append to `social-media/ideas.md` (dated bullet)
      - **Specific numbers, stats, reusable data points** → append to `social-media/data-points.md` (with source)
      - **External posts that hit + why** → append to `social-media/swipe-file.md` (link + reason)
-     - **Research findings, frameworks, methodologies** → create `social-media/research/YYYY-MM-DD — topic.md`
+     - **Research findings, frameworks, methodologies** → create `social-media/research/YYYY-MM-DD - topic.md`
 5. After all agents complete: update today's daily note with links to everything saved
 6. Report back: a clean list of what was saved and where
 

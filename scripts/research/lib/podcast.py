@@ -2,6 +2,7 @@
 
 Inputs accepted:
   - Apple Podcasts URL (https://podcasts.apple.com/.../id<show>?i=<episode>)
+  - Spotify episode URL (bridged to the public RSS feed via oEmbed + Apple search)
   - RSS feed URL pointing at a single episode <item> (uses first episode)
   - Direct RSS URL + ?episode=<guid-or-title-fragment>
 
@@ -18,16 +19,65 @@ import re
 import sys
 import tempfile
 from typing import Any
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 
 import requests
 
 ITUNES_LOOKUP = "https://itunes.apple.com/lookup"
+ITUNES_SEARCH = "https://itunes.apple.com/search"
 APPLE_RE = re.compile(r"podcasts\.apple\.com/.+/id(\d+)(?:\?i=(\d+))?", re.IGNORECASE)
+SPOTIFY_RE = re.compile(r"open\.spotify\.com/(?:episode|show)/", re.IGNORECASE)
+SPOTIFY_OEMBED = "https://open.spotify.com/oembed"
 
 
 def is_apple_url(s: str) -> bool:
     return bool(APPLE_RE.search(s))
+
+
+def is_spotify_url(s: str) -> bool:
+    return bool(SPOTIFY_RE.search(s))
+
+
+def _norm_title(s: str) -> str:
+    """Loose title key for matching across platforms: lowercase alphanumerics only."""
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+def resolve_spotify_to_feed(spotify_url: str) -> tuple[str, str]:
+    """Bridge a Spotify episode URL to a public RSS feed + episode title.
+
+    Spotify's own audio is DRM-locked and has no RSS, but the same episode is almost
+    always published to an open podcast feed. We read the episode title from Spotify's
+    key-free oEmbed endpoint, then find that episode in Apple's index (which exposes the
+    feedUrl). The episode is then pulled from that feed by title, not from Spotify.
+    """
+    o = requests.get(SPOTIFY_OEMBED, params={"url": spotify_url}, timeout=15)
+    if o.status_code != 200:
+        raise ValueError(
+            "Could not read this Spotify link (oEmbed returned "
+            f"{o.status_code}). Make sure it is a public episode URL."
+        )
+    title = (o.json().get("title") or "").strip()
+    if not title:
+        raise ValueError("Spotify did not return an episode title for that URL.")
+
+    resp = requests.get(
+        ITUNES_SEARCH,
+        params={"media": "podcast", "entity": "podcastEpisode", "term": title, "limit": 5},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    results = resp.json().get("results", [])
+    want = _norm_title(title)
+    best = next((r for r in results if _norm_title(r.get("trackName", "")) == want), None)
+    if best is None:
+        best = results[0] if results else None
+    if not best or not best.get("feedUrl"):
+        raise ValueError(
+            f"Found the Spotify episode '{title}' but could not match it to a public "
+            "podcast feed - it may be a Spotify-exclusive show with no open RSS."
+        )
+    return best["feedUrl"], title
 
 
 def is_url(s: str) -> bool:
@@ -36,6 +86,45 @@ def is_url(s: str) -> bool:
         return u.scheme in ("http", "https") and bool(u.netloc)
     except Exception:
         return False
+
+
+def safe_fetch_url(url: str) -> str | None:
+    """Reject a feed-supplied URL that points anywhere but the public internet.
+
+    The transcript and audio URLs come verbatim out of a third-party feed, and
+    the Apple/Spotify lookups resolve to a feedUrl chosen by whoever published
+    the show - so a normal-looking podcasts.apple.com link is enough to reach
+    this code. Without a check, a feed can point at http://localhost:11434, a
+    dev server on 127.0.0.1, or a cloud metadata endpoint, and the response body
+    is then summarized by an LLM and written into the user's vault.
+
+    Returns the reason it was rejected, or None when the URL is safe to fetch.
+    """
+    import ipaddress
+    import socket
+
+    try:
+        u = urlparse(url)
+    except Exception:
+        return "unparseable URL"
+    if u.scheme not in ("http", "https"):
+        return f"scheme {u.scheme!r} is not http/https"
+    host = u.hostname
+    if not host:
+        return "no host"
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError as e:
+        return f"cannot resolve {host}: {e}"
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return f"{host} resolves to a non-public address ({ip})"
+    return None
 
 
 def resolve_apple_to_rss(apple_url: str) -> tuple[str, str | None]:
@@ -55,7 +144,9 @@ def resolve_apple_to_rss(apple_url: str) -> tuple[str, str | None]:
     return feed_url, episode_id
 
 
-def parse_feed(feed_url: str, episode_id: str | None = None) -> dict[str, Any]:
+def parse_feed(
+    feed_url: str, episode_id: str | None = None, episode_title: str | None = None
+) -> dict[str, Any]:
     """Parse an RSS feed and return episode metadata + audio URL + show-notes + transcript-tag-url."""
     try:
         import feedparser
@@ -70,7 +161,7 @@ def parse_feed(feed_url: str, episode_id: str | None = None) -> dict[str, Any]:
     show_title = (parsed.feed.get("title") or "").strip() or "(unknown show)"
     show_author = (parsed.feed.get("author") or parsed.feed.get("itunes_author") or "").strip()
 
-    entry = _pick_entry(parsed.entries, episode_id)
+    entry = _pick_entry(parsed.entries, episode_id, episode_title)
     if entry is None:
         raise ValueError("No entries found in feed")
 
@@ -93,7 +184,9 @@ def parse_feed(feed_url: str, episode_id: str | None = None) -> dict[str, Any]:
     }
 
 
-def _pick_entry(entries: list[Any], episode_id: str | None) -> Any | None:
+def _pick_entry(
+    entries: list[Any], episode_id: str | None, episode_title: str | None = None
+) -> Any | None:
     if not entries:
         return None
     if episode_id:
@@ -103,6 +196,21 @@ def _pick_entry(entries: list[Any], episode_id: str | None) -> Any | None:
         print(
             f"[podcast: episode id '{episode_id}' not found in feed (feed may be paginated "
             f"and only serve recent episodes); falling back to most recent entry.]",
+            file=sys.stderr,
+        )
+    if episode_title:
+        want = _norm_title(episode_title)
+        exact = next((e for e in entries if _norm_title(e.get("title", "")) == want), None)
+        if exact is not None:
+            return exact
+        partial = next(
+            (e for e in entries if want and want in _norm_title(e.get("title", ""))), None
+        )
+        if partial is not None:
+            return partial
+        print(
+            f"[podcast: episode '{episode_title}' not found in feed (it may be older than "
+            "the feed's window); falling back to most recent entry.]",
             file=sys.stderr,
         )
     return entries[0]
@@ -156,8 +264,21 @@ def _strip_html(s: str) -> str:
 
 def fetch_transcript_tag(transcript_url: str) -> str | None:
     """Download a <podcast:transcript> resource. Supports text/plain, text/html, text/srt, text/vtt, JSON."""
+    bad = safe_fetch_url(transcript_url)
+    if bad:
+        print(f"[podcast transcript-tag refused: {bad}]", file=sys.stderr)
+        return None
     try:
-        r = requests.get(transcript_url, timeout=30)
+        # allow_redirects=False: an allowed host must not be able to bounce the
+        # request inward with a 302 after passing the check above.
+        r = requests.get(transcript_url, timeout=30, allow_redirects=False)
+        if r.is_redirect or r.is_permanent_redirect:
+            nxt = r.headers.get("Location", "")
+            bad = safe_fetch_url(nxt) if nxt else "empty redirect target"
+            if bad:
+                print(f"[podcast transcript-tag refused redirect: {bad}]", file=sys.stderr)
+                return None
+            r = requests.get(nxt, timeout=30, allow_redirects=False)
         r.raise_for_status()
     except Exception as e:
         print(f"[podcast transcript-tag fetch failed: {type(e).__name__}: {e}]", file=sys.stderr)
@@ -237,6 +358,10 @@ def transcribe_via_whisper(audio_url: str, max_bytes: int = 25 * 1024 * 1024) ->
         print("[podcast whisper: openai package not installed]", file=sys.stderr)
         return None
 
+    bad = safe_fetch_url(audio_url)
+    if bad:
+        print(f"[podcast whisper refused: {bad}]", file=sys.stderr)
+        return None
     try:
         with requests.get(audio_url, stream=True, timeout=60) as resp:
             resp.raise_for_status()
@@ -310,6 +435,13 @@ def resolve_input(user_input: str) -> dict[str, Any]:
     if is_apple_url(s):
         feed_url, episode_id = resolve_apple_to_rss(s)
         episode = parse_feed(feed_url, episode_id=episode_id)
+        episode["source_url"] = s
+        episode["feed_url"] = feed_url
+        return episode
+
+    if is_spotify_url(s):
+        feed_url, episode_title = resolve_spotify_to_feed(s)
+        episode = parse_feed(feed_url, episode_title=episode_title)
         episode["source_url"] = s
         episode["feed_url"] = feed_url
         return episode

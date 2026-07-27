@@ -16,10 +16,9 @@ import os
 
 import pytest
 
-from scripts.research.lib import cache, http
+from scripts.research.lib import cache, http, source_config
 from scripts.research.lib.aggregator import aggregate
 from scripts.research.lib.result import Result, encode_results
-from scripts.research.lib import source_config
 
 
 def test_library_imports_without_vault_path():
@@ -37,9 +36,6 @@ def test_library_imports_without_vault_path():
     from scripts.research.lib.sources.semantic_scholar import SemanticScholarSource
     from scripts.research.lib.sources.tavily import TavilySource
     from scripts.research.lib.sources.wikipedia import WikipediaSource
-
-    # WebReader (Tavily Extract) must also import without a vault path.
-    from scripts.research.lib.web_reader import WebReader  # noqa: F401
 
     names = {
         ArxivSource.name, CrossRefSource.name, DevToSource.name, DuckDuckGoSource.name,
@@ -85,6 +81,7 @@ def test_source_config_defaults_and_env(monkeypatch):
 
 def test_cache_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     assert cache.get("hackernews", "rust async", ttl_hours=24) is None  # miss
     rows = [Result(source="hackernews", title="t", url="u", points=1)]
     cache.put("hackernews", "rust async", rows)
@@ -123,168 +120,311 @@ def test_aggregate_collects_and_degrades_gracefully():
     json.dumps(out)
 
 
-# --- Tavily (search + extract) -------------------------------------------------
-# These mock the HTTP session (no network). Credit logging is exercised only when
-# OBSIDIAN_VAULT_PATH is set; tests clear it so logging is skipped and lib.config
-# (which requires the vault path) is never imported.
-
-
-class _FakeResponse:
-    def __init__(self, status_code=200, payload=None):
-        self.status_code = status_code
-        self._payload = payload if payload is not None else {}
-
-    def json(self):
-        return self._payload
-
-
-class _FakeSession:
-    def __init__(self, response=None, raises=False):
-        self._response = response
-        self._raises = raises
-        self.calls = []
-
-    def post(self, url, json=None, headers=None, timeout=None):
-        self.calls.append({"url": url, "json": json, "headers": headers})
-        if self._raises:
-            raise RuntimeError("network boom")
-        return self._response
-
-
-def test_tavily_search_maps_results(tmp_path, monkeypatch):
+def test_tavily_requires_key(monkeypatch):
+    """Without TAVILY_API_KEY the constructor refuses - the source must never
+    be built keyless (research._free_sources gates on the env var)."""
     from scripts.research.lib.sources.tavily import TavilySource
 
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
-    monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    with pytest.raises(RuntimeError):
+        TavilySource()
 
-    src = TavilySource()
-    src._session = _FakeSession(_FakeResponse(200, {
+
+def test_tavily_source_search(monkeypatch, tmp_path):
+    """TavilySource hits the REST API with plain requests (no SDK), sends the
+    key as a Bearer header (never in the JSON body), and maps the response to
+    Result objects."""
+    from unittest.mock import MagicMock
+
+    from scripts.research.lib.sources.tavily import TavilySource
+
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
+    # Isolate the disk cache (cache paths derive from HOME).
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    fake_resp = MagicMock()
+    fake_resp.json.return_value = {
         "results": [
-            {"title": "Rust async", "url": "https://example.com/a",
-             "content": "snippet here", "score": 0.9},
-        ],
-        "usage": {"credits": 1},
-    }))
+            {"title": "Tavily Result", "url": "https://example.com", "content": "A snippet"},
+            {"title": "keyless row dropped", "url": "", "content": "no url"},
+        ]
+    }
+    fake_resp.raise_for_status.return_value = None
 
-    out = src.search("rust async runtimes unique-map", n=5)
-    assert len(out) == 1
-    assert out[0].source == "tavily"
-    assert out[0].url == "https://example.com/a"
-    assert out[0].snippet == "snippet here"
-    assert out[0].extra["score"] == 0.9
-    body = src._session.calls[0]["json"]
-    assert body["include_raw_content"] is False  # full content is a separate extract step
-    assert src._session.calls[0]["headers"]["Authorization"] == "Bearer tvly-test"
-
-
-def test_tavily_search_non_200_returns_empty(tmp_path, monkeypatch):
-    from scripts.research.lib.sources.tavily import TavilySource
-
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
     src = TavilySource()
-    src._session = _FakeSession(_FakeResponse(429, {}))
-    assert src.search("rate limited unique-429", n=5) == []
+    fake_session = MagicMock()
+    fake_session.post.return_value = fake_resp
+    src._session = fake_session
+
+    results = src.search("test query", n=5)
+
+    assert len(results) == 1
+    assert results[0].source == "tavily"
+    assert results[0].title == "Tavily Result"
+    assert results[0].url == "https://example.com"
+    assert results[0].snippet == "A snippet"
+    # Auth travels in the header; the key must not leak into the payload.
+    _, kwargs = fake_session.post.call_args
+    assert kwargs["headers"]["Authorization"] == "Bearer tvly-test-key"
+    assert "api_key" not in kwargs["json"]
+    assert kwargs["json"]["max_results"] == 5
 
 
-def test_tavily_search_exception_returns_empty(tmp_path, monkeypatch):
+def test_tavily_cache_key_isolates_search_depth(monkeypatch, tmp_path):
+    """A 'basic' run and an 'advanced' run of the same query must not poison
+    each other's cache - TAVILY_SEARCH_DEPTH is folded into the cache key."""
+    from unittest.mock import MagicMock
+
     from scripts.research.lib.sources.tavily import TavilySource
 
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
-    src = TavilySource()
-    src._session = _FakeSession(raises=True)
-    assert src.search("network down unique-boom", n=5) == []
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
 
-
-def test_tavily_cache_key_isolates_depth(tmp_path, monkeypatch):
-    """A 'basic' run and an 'advanced' run of the same query must not poison each
-    other's cache (challenge 1)."""
-    from scripts.research.lib.sources.tavily import TavilySource
-
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
-    monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+    def _session_returning(snippet):
+        resp = MagicMock()
+        resp.json.return_value = {
+            "results": [{"title": "T", "url": "https://x.example", "content": snippet}]
+        }
+        resp.raise_for_status.return_value = None
+        session = MagicMock()
+        session.post.return_value = resp
+        return session
 
     monkeypatch.setenv("TAVILY_SEARCH_DEPTH", "basic")
     basic = TavilySource()
-    basic._session = _FakeSession(_FakeResponse(200, {
-        "results": [{"title": "B", "url": "https://b", "content": "basic", "score": 1}]}))
+    basic._session = _session_returning("basic")
     assert basic.search("shared query", n=10)[0].snippet == "basic"
-    assert len(basic._session.calls) == 1
+    assert basic._session.post.call_count == 1
 
     # Same query, advanced depth -> different cache key -> its own request.
     monkeypatch.setenv("TAVILY_SEARCH_DEPTH", "advanced")
     adv = TavilySource()
-    adv._session = _FakeSession(_FakeResponse(200, {
-        "results": [{"title": "A", "url": "https://a", "content": "advanced", "score": 1}]}))
+    adv._session = _session_returning("advanced")
     assert adv.search("shared query", n=10)[0].snippet == "advanced"
-    assert len(adv._session.calls) == 1  # no cross-poison
+    assert adv._session.post.call_count == 1  # no cross-poison with "basic"
 
-    # Re-running basic now hits the cache: no new request, original payload.
+    # Re-running basic now hits the cache: no new request.
     monkeypatch.setenv("TAVILY_SEARCH_DEPTH", "basic")
     basic2 = TavilySource()
-    basic2._session = _FakeSession(_FakeResponse(200, {"results": []}))
+    basic2._session = _session_returning("should-not-be-called")
     assert basic2.search("shared query", n=10)[0].snippet == "basic"
-    assert len(basic2._session.calls) == 0  # served from cache
+    assert basic2._session.post.call_count == 0  # served from cache
 
 
-def test_web_reader_truncates_and_drops_failures(tmp_path, monkeypatch):
-    from scripts.research.lib.web_reader import MAX_EXTRACT_CHARS, WebReader
-
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
-    monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
-
-    reader = WebReader()
-    reader._session = _FakeSession(_FakeResponse(200, {
-        "results": [{"url": "https://ok", "raw_content": "x" * (MAX_EXTRACT_CHARS + 1000)}],
-        "failed_results": [{"url": "https://bad"}],
-        "usage": {"credits": 1},
-    }))
-    out = reader.read(["https://ok", "https://bad"])
-    assert set(out.keys()) == {"https://ok"}  # failed_results dropped
-    assert len(out["https://ok"]) == MAX_EXTRACT_CHARS  # truncated to the cap
-
-
-def test_web_reader_caps_url_count(tmp_path, monkeypatch):
-    from scripts.research.lib.web_reader import MAX_EXTRACT_URLS, WebReader
-
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
-    reader = WebReader()
-    reader._session = _FakeSession(_FakeResponse(200, {"results": [], "failed_results": []}))
-    reader.read([f"https://u{i}" for i in range(10)])
-    posted = reader._session.calls[0]["json"]["urls"]
-    assert len(posted) == MAX_EXTRACT_URLS
-
-
-def test_web_reader_no_key_returns_empty(monkeypatch):
-    from scripts.research.lib.web_reader import WebReader
+def test_free_sources_include_tavily_only_with_key(monkeypatch):
+    """research._free_sources appends Tavily when the key is set, skips it
+    keyless - the pool must stay fully key-less by default."""
+    from scripts.research import research
 
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    reader = WebReader()
-    assert reader.read(["https://x"]) == {}
+    without = {type(s).__name__ for s in research._free_sources(academic=False)}
+    assert "TavilySource" not in without
+
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
+    with_key = {type(s).__name__ for s in research._free_sources(academic=False)}
+    assert "TavilySource" in with_key
+    # Academic mode stays untouched either way.
+    academic = {type(s).__name__ for s in research._free_sources(academic=True)}
+    assert "TavilySource" not in academic
 
 
-def test_free_sources_swaps_ddg_for_tavily(monkeypatch):
-    """With a Tavily key, the keyless web pool uses Tavily instead of DuckDuckGo
-    (challenge 4); without it, DuckDuckGo stays and Tavily is absent."""
-    from scripts.research.research import _free_sources
+def test_brave_source_search(monkeypatch, tmp_path):
+    """BraveSource hits the REST API with the X-Subscription-Token header and
+    maps web.results to Result objects; rows without a URL are dropped."""
+    from unittest.mock import MagicMock
 
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
-    names = {s.name for s in _free_sources(academic=False)}
-    assert "tavily" in names and "duckduckgo" not in names
+    from scripts.research.lib.sources.brave import BraveSource
 
+    monkeypatch.setenv("BRAVE_API_KEY", "brv-test-key")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    fake_resp = MagicMock()
+    fake_resp.json.return_value = {
+        "web": {
+            "results": [
+                {"title": "Brave Result", "url": "https://example.com", "description": "A snippet"},
+                {"title": "dropped", "url": "", "description": "no url"},
+            ]
+        }
+    }
+    fake_resp.raise_for_status.return_value = None
+
+    src = BraveSource()
+    fake_session = MagicMock()
+    fake_session.get.return_value = fake_resp
+    src._session = fake_session
+
+    results = src.search("test query", n=5)
+
+    assert len(results) == 1
+    assert results[0].source == "brave"
+    assert results[0].title == "Brave Result"
+    assert results[0].snippet == "A snippet"
+    _, kwargs = fake_session.get.call_args
+    assert kwargs["headers"]["X-Subscription-Token"] == "brv-test-key"
+    assert kwargs["params"]["count"] == 5
+
+    monkeypatch.delenv("BRAVE_API_KEY")
+    with pytest.raises(RuntimeError):
+        BraveSource()
+
+
+def test_free_sources_gate_brave_on_key(monkeypatch):
+    """Brave joins the free-mode pool only when BRAVE_API_KEY is set."""
+    from scripts.research import research
+
+    monkeypatch.delenv("BRAVE_API_KEY", raising=False)
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    names_free = {s.name for s in _free_sources(academic=False)}
-    assert "duckduckgo" in names_free and "tavily" not in names_free
+    without = {type(s).__name__ for s in research._free_sources(academic=False)}
+    assert "BraveSource" not in without
+
+    monkeypatch.setenv("BRAVE_API_KEY", "brv-test-key")
+    with_key = {type(s).__name__ for s in research._free_sources(academic=False)}
+    assert "BraveSource" in with_key
 
 
-def test_free_sources_academic_never_uses_tavily(monkeypatch):
-    from scripts.research.research import _free_sources
+def test_free_sources_academic_excludes_keyed_extras(monkeypatch):
+    """Academic mode returns the scholarly-only source list unconditionally -
+    Tavily and Brave never join it, even when both keys are set."""
+    from scripts.research import research
 
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
-    names = {s.name for s in _free_sources(academic=True)}
-    assert "tavily" not in names
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
+    monkeypatch.setenv("BRAVE_API_KEY", "brv-test-key")
+    academic = {type(s).__name__ for s in research._free_sources(academic=True)}
+    assert "TavilySource" not in academic
+    assert "BraveSource" not in academic
+
+
+def test_usage_ledger_is_fail_soft(monkeypatch, tmp_path, capsys):
+    """A broken ledger path must warn and return - never raise into the paid
+    call it observes (the api-ledger fork's fail-soft contract)."""
+    # lib.config (pulled in by usage) hard-requires a vault path at import time.
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(tmp_path))
+    from scripts.research.lib import usage
+
+    # Point the ledger at a path whose parent is a FILE - mkdir will fail.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a dir")
+    monkeypatch.setattr(usage, "USAGE_LOG", blocker / "usage.log")
+
+    usage.log_call("research", "sonar-pro", 100, 200, 0.01)  # must not raise
+    assert "could not record call" in capsys.readouterr().err
+
+
+def test_perplexity_cost_estimate_known_and_unknown_models(monkeypatch, tmp_path):
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(tmp_path))
+    from scripts.research.lib import usage
+
+    known = usage.estimate_perplexity_cost("sonar-pro", 1_000_000, 1_000_000)
+    assert known == pytest.approx(3.00 + 15.00)
+    # Unknown model: log tokens, never invent a price.
+    assert usage.estimate_perplexity_cost("sonar-reasoning-pro", 1_000_000, 1_000_000) == 0.0
+
+
+def test_log_tavily_records_real_credit_cost(monkeypatch, tmp_path, capsys):
+    """Tavily bills in credits, not tokens: log_tavily must record the real
+    nominal cost (not a flat $0) and warn on stderr past the credit threshold."""
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(tmp_path))
+    from scripts.research.lib import usage
+
+    monkeypatch.setattr(usage, "USAGE_LOG", tmp_path / "usage.log")
+
+    usage.log_tavily("research", credits=5)
+    entry = json.loads(usage.USAGE_LOG.read_text().splitlines()[-1])
+    assert entry["model"] == "tavily"
+    assert entry["credits"] == 5
+    assert entry["cost_usd"] == pytest.approx(5 * usage.TAVILY_CREDIT_USD)
+    assert "Tavily credits" not in capsys.readouterr().err  # below warn threshold
+
+    usage.log_tavily("research", credits=usage.TAVILY_CREDIT_WARN + 1)
+    assert "Tavily credits" in capsys.readouterr().err
+
+
+def test_gemini_call_maps_response_and_uses_header_auth(monkeypatch, tmp_path):
+    """gemini.call returns the grok.call shape, and the key travels in the
+    x-goog-api-key header - never in the URL query string."""
+    from unittest.mock import MagicMock
+
+    monkeypatch.setenv("GEMINI_API_KEY", "gem-test-key")
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(tmp_path))
+    from scripts.research.lib import gemini
+    monkeypatch.setattr("scripts.research.lib.usage.USAGE_LOG", tmp_path / "usage.log")
+
+    fake_resp = MagicMock()
+    fake_resp.status_code = 200
+    fake_resp.json.return_value = {
+        "candidates": [{"content": {"parts": [{"text": "summary "}, {"text": "text"}]}}],
+        "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 20},
+    }
+
+    captured = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        captured.update(url=url, headers=headers)
+        return fake_resp
+
+    monkeypatch.setattr(gemini.requests, "post", fake_post)
+    result = gemini.call("summarize this", command="youtube")
+
+    assert result["text"] == "summary text"
+    assert result["input_tokens"] == 10 and result["output_tokens"] == 20
+    assert captured["headers"]["x-goog-api-key"] == "gem-test-key"
+    assert "key=" not in captured["url"]
+
+
+def test_web_reader_unavailable_without_key(monkeypatch):
+    """No TAVILY_API_KEY -> read() returns {} without any network call."""
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", "/tmp/x")
+    from scripts.research.lib import web_reader
+
+    assert web_reader.available() is False
+    assert web_reader.read(["https://example.com"]) == {}
+
+
+def test_web_reader_caps_urls_and_truncates(monkeypatch, tmp_path):
+    """read() dedupes, caps at MAX_EXTRACT_URLS, truncates page text, and never
+    lets an HTTP failure escape."""
+    from unittest.mock import MagicMock
+
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    from scripts.research.lib import web_reader
+
+    monkeypatch.setattr("scripts.research.lib.usage.USAGE_LOG", tmp_path / "usage.log")
+
+    long_text = "x" * (web_reader.MAX_EXTRACT_CHARS + 500)
+    fake_resp = MagicMock()
+    fake_resp.json.return_value = {
+        "results": [
+            {"url": "https://a.example", "raw_content": long_text},
+            {"url": "https://b.example", "raw_content": "short"},
+        ]
+    }
+    fake_resp.raise_for_status.return_value = None
+    fake_session = MagicMock()
+    fake_session.post.return_value = fake_resp
+
+    monkeypatch.setattr(web_reader.http, "get_session", lambda **kw: fake_session)
+
+    urls = ["https://a.example", "https://a.example", "https://b.example",
+            "https://c.example", "https://d.example", "not-a-url"]
+    out = web_reader.read(urls)
+
+    # Dedup + cap: only 3 unique http URLs sent.
+    _, kwargs = fake_session.post.call_args
+    assert kwargs["json"]["urls"] == ["https://a.example", "https://b.example", "https://c.example"]
+    assert kwargs["headers"]["Authorization"] == "Bearer tvly-test-key"
+    assert len(out["https://a.example"]) == web_reader.MAX_EXTRACT_CHARS
+    assert out["https://b.example"] == "short"
+
+    # Total failure -> {} and no exception.
+    broken_session = MagicMock()
+    broken_session.post.side_effect = OSError("network down")
+    monkeypatch.setattr(web_reader.http, "get_session", lambda **kw: broken_session)
+    assert web_reader.read(["https://a.example"]) == {}

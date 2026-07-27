@@ -1,21 +1,23 @@
 ---
-description: Scan X for what's trending in a topic - themes, voices, hooks, and post ideas powered by Grok + Live Search
+description: Scan X for what's trending in a topic - themes, voices, hooks, and post ideas powered by Grok x_search
 category: research
 triggers_en: ["x pulse", "what is trending on twitter", "scan x for", "twitter pulse"]
+triggers_es: ["x pulse", "qué es tendencia en twitter", "escanea x en busca de", "pulso de twitter"]
+triggers_pt: ["x pulse", "o que está em alta no x", "escaneie o x em busca de", "pulso do twitter"]
 ---
 
 Use the obsidian-second-brain skill. Execute `/x-pulse [topic]`:
 
 1. Resolve the topic from the user's argument. Multi-word topics are fine ("AI automation", "vibe coding"). If no topic was given, ask: "What topic should I scan X for?"
 
-2. Run the Python command from the repo root (`~/Projects/personal/obsidian-second-brain/`):
+2. Run the script from the skill root (its absolute path was given at session start as **Skill root**; substitute it for `SKILL_ROOT`):
    ```bash
-   uv run -m scripts.research.x_pulse "<topic>"
+   uv run --directory "SKILL_ROOT" -m scripts.research.x_pulse "<topic>"
    ```
 
 3. The script returns a structured pulse: WHAT'S HOT (themes with rep posts + voices), WHAT'S UNDEREXPLORED (gaps), HOOKS THAT ARE WORKING, VOICE & TONE WORKING, POST IDEAS FOR YOU TODAY. Show the full output to the user verbatim.
 
-4. **Default save behavior: saves automatically.** The script writes an AI-first note to `Research/X-pulse/YYYY-MM-DD — <slug>.md` with the AI-first vault rule applied (preamble, frontmatter, recency markers, sources verbatim). It also appends a one-line entry to `log.md`.
+4. **Default save behavior: saves automatically.** The script writes an AI-first note to `Research/X-pulse/YYYY-MM-DD - <slug>.md` with the AI-first vault rule applied (preamble, frontmatter, recency markers, sources verbatim). It also appends a one-line entry to `log.md`.
 
 5. After printing, mention to the user the file path that was saved (the script prints this on stderr, surface it cleanly).
 

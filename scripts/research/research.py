@@ -85,16 +85,17 @@ def _free_sources(academic: bool):
         SemanticScholarSource(),
     ]
 
-    # When a Tavily key is present, swap the fragile DuckDuckGo scraper for Tavily
-    # (LLM-optimized web search). The aggregator waits on all sources in parallel
-    # up to a 30s barrier, so keeping the slow/CAPTCHA-prone DuckDuckGo alongside
-    # Tavily would drag every keyed request down to DuckDuckGo's latency. Filter by
-    # type (not index) so it survives future reordering of the list above.
+    # Optional keyed extras join the pool when their key is set. The shared
+    # .env is already loaded by main() via source_config (the #125 lesson:
+    # never read a key before load_dotenv has run).
     if os.environ.get("TAVILY_API_KEY", "").strip():
         from .lib.sources.tavily import TavilySource
 
-        sources = [s for s in sources if not isinstance(s, DuckDuckGoSource)]
-        sources.insert(0, TavilySource())
+        sources.append(TavilySource())
+    if os.environ.get("BRAVE_API_KEY", "").strip():
+        from .lib.sources.brave import BraveSource
+
+        sources.append(BraveSource())
 
     return sources
 
@@ -202,6 +203,11 @@ def main(argv: list[str]) -> int:
     if not topic:
         print("Usage: /research <topic> [--free] [--academic]", file=sys.stderr)
         return 2
+
+    # Load the shared ~/.config/obsidian-second-brain/.env before deciding
+    # free vs paid. source_config does this without requiring vault config
+    # (unlike lib.config), so zero-config free mode keeps working.
+    from .lib import source_config  # noqa: F401
 
     use_free = force_free or not os.environ.get("PERPLEXITY_API_KEY", "").strip()
     if use_free:

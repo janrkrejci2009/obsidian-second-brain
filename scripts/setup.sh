@@ -27,6 +27,12 @@ yellow() { printf '\033[0;33m%s\033[0m\n' "$1"; }
 red()    { printf '\033[0;31m%s\033[0m\n' "$1"; }
 step()   { printf '\n\033[1m%s\033[0m\n' "$1"; }
 
+if ! command -v jq >/dev/null 2>&1; then
+  red "Error: jq is required (it edits ~/.claude/settings.json safely)."
+  echo "Install it: brew install jq   |   sudo apt install jq   |   https://jqlang.github.io/jq/"
+  exit 1
+fi
+
 # ── vault path ───────────────────────────────────────────────────────────────
 
 VAULT="${1:-}"
@@ -40,6 +46,9 @@ VAULT="${VAULT/#\~/$HOME}"  # expand leading ~
 
 if [[ ! -d "$VAULT" ]]; then
   red "Error: vault directory not found: $VAULT"
+  echo "No vault yet? Create one first:"
+  echo "  uv run python \"$SKILL_DIR/scripts/bootstrap_vault.py\" --path \"$VAULT\" --name \"Your Name\""
+  echo "then re-run this setup."
   echo "Create it first or check the path."
   exit 1
 fi
@@ -84,11 +93,16 @@ green "   OBSIDIAN_VAULT_PATH set"
 
 # Wire the vault path into the research toolkit .env so standalone runs resolve it
 if [ -f "$ENV_FILE" ]; then
-  VAULT="$VAULT" awk '
-    /^OBSIDIAN_VAULT_PATH=/ { print "OBSIDIAN_VAULT_PATH=" ENVIRON["VAULT"]; done=1; next }
-    { print }
-    END { if (!done) print "OBSIDIAN_VAULT_PATH=" ENVIRON["VAULT"] }
-  ' "$ENV_FILE" > "$ENV_FILE.tmp" && mv "$ENV_FILE.tmp" "$ENV_FILE"
+  # umask 077 on the rewrite: the temp file is created fresh, so under a default
+  # umask the mv silently replaced install.sh's 0600 with 0644 and exposed every
+  # API key in this file to any other account on the machine. Same pattern as
+  # integrations/telegram-journal/setup.sh, plus an explicit chmod as a backstop.
+  ( umask 077
+    VAULT="$VAULT" awk '
+      /^OBSIDIAN_VAULT_PATH=/ { print "OBSIDIAN_VAULT_PATH=" ENVIRON["VAULT"]; done=1; next }
+      { print }
+      END { if (!done) print "OBSIDIAN_VAULT_PATH=" ENVIRON["VAULT"] }
+    ' "$ENV_FILE" > "$ENV_FILE.tmp" ) && mv "$ENV_FILE.tmp" "$ENV_FILE" && chmod 600 "$ENV_FILE"
   green "   OBSIDIAN_VAULT_PATH written to research .env"
 fi
 
@@ -185,26 +199,29 @@ fi
 
 # ── optional: MCP server (Claude Code only) ───────────────────────────────────
 
-step "4. MCP server (optional - Claude Code only)..."
-echo "   The obsidian-vault MCP server gives Claude faster vault access."
-echo "   Without it, Claude reads/writes vault files directly (works fine)."
+step "4. MCP server (optional)..."
+echo "   This repo ships its own MCP server (integrations/obsidian-mcp-server/)."
+echo "   It is optional: in Claude Code, Claude reads/writes vault files directly"
+echo "   and everything works without it. The server is mainly useful for other"
+echo "   MCP clients (Claude Desktop, Cursor, Hermes). It needs 'uv' on PATH."
 echo ""
+MCP_CMD="claude mcp add obsidian-second-brain -s user -e OBSIDIAN_VAULT_PATH=\"$VAULT\" -- uv run --with mcp python \"$SKILL_DIR/integrations/obsidian-mcp-server/server.py\""
 REPLY=n
 if [[ -t 0 ]]; then
-  read -r -p "   Configure MCP server for Claude Code? [y/N] " REPLY
+  read -r -p "   Configure the bundled MCP server? [y/N] " REPLY
 fi
 if [[ "$REPLY" =~ ^[Yy]$ ]]; then
-  if command -v claude &>/dev/null; then
-    claude mcp add obsidian-vault -s user -- npx -y mcp-obsidian "$VAULT"
+  if command -v claude &>/dev/null && command -v uv &>/dev/null; then
+    claude mcp add obsidian-second-brain -s user -e OBSIDIAN_VAULT_PATH="$VAULT" -- uv run --with mcp python "$SKILL_DIR/integrations/obsidian-mcp-server/server.py"
     green "   MCP server configured"
   else
-    yellow "   claude CLI not found - skipping MCP setup"
+    yellow "   claude and/or uv CLI not found - skipping MCP setup"
     echo "   Run manually when ready:"
-    echo "   claude mcp add obsidian-vault -s user -- npx -y mcp-obsidian \"$VAULT\""
+    echo "   $MCP_CMD"
   fi
 else
   echo "   Skipped. Run later if you want it:"
-  echo "   claude mcp add obsidian-vault -s user -- npx -y mcp-obsidian \"$VAULT\""
+  echo "   $MCP_CMD"
 fi
 
 # ── done ─────────────────────────────────────────────────────────────────────
@@ -220,6 +237,6 @@ echo "   /obsidian-init"
 echo ""
 echo "That's it. Claude will scan your vault and generate its operating manual."
 echo ""
-echo "Background agent logs: /tmp/obsidian-bg-agent.log"
+echo "Background agent logs: \$TMPDIR/obsidian-bg-agent-\$(id -u).log"
 echo "Health check:          python scripts/vault_health.py --path \"$VAULT\""
 echo ""

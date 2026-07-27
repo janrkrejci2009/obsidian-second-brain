@@ -7,10 +7,6 @@
 # Do NOT execute directly.
 # =============================================================================
 
-# ── Vocabulary constants ────────────────────────────────────────────────────
-# Closed set of capabilities a command may declare (optional in Phase 1).
-CAPABILITY_VOCAB="read write edit bash webfetch websearch task todo"
-
 # ── Frontmatter parsing ─────────────────────────────────────────────────────
 
 # parse_frontmatter <file> <key>
@@ -18,13 +14,33 @@ CAPABILITY_VOCAB="read write edit bash webfetch websearch task todo"
 # Empty if the key is not found.
 parse_frontmatter() {
   local file="$1" key="$2"
-  awk -v key="$key" '
+  LC_ALL=C awk -v key="$key" '
+    NR == 1 { sub(/^\xef\xbb\xbf/, "") }
+    { sub(/\r$/, "") }
     /^---$/ { fm++; next }
     fm == 1 {
       sub(/^[[:space:]]+/, "")
       if (match($0, "^" key ":[[:space:]]*")) {
         value = substr($0, RLENGTH + 1)
         sub(/[[:space:]]+$/, "", value)
+        # Block scalar: the value is on the following, more-indented lines.
+        # Without this the caller received a literal ">" or "|", which is
+        # non-empty and so silently defeats every empty-value fallback.
+        if (value == ">" || value == "|" || value == ">-" || value == "|-" ||
+            value == ">+" || value == "|+") {
+          value = ""
+          while ((getline line) > 0) {
+            sub(/\r$/, "", line)
+            if (line ~ /^---$/) break
+            if (line !~ /^[[:space:]]/ || line ~ /^[[:space:]]*$/) {
+              if (line ~ /^[[:space:]]*$/) continue
+              break
+            }
+            sub(/^[[:space:]]+/, "", line)
+            sub(/[[:space:]]+$/, "", line)
+            value = (value == "" ? line : value " " line)
+          }
+        }
         print value
         exit
       }
@@ -37,7 +53,9 @@ parse_frontmatter() {
 # Echoes everything after the closing --- of the frontmatter block.
 command_body() {
   local file="$1"
-  awk '
+  LC_ALL=C awk '
+    NR == 1 { sub(/^\xef\xbb\xbf/, "") }
+    { sub(/\r$/, "") }
     fm < 2 && /^---$/ { fm++; next }
     fm >= 2 { print }
   ' "$file"
@@ -55,16 +73,6 @@ should_include() {
     [[ "$t" == "$platform" ]] && return 1
   done
   return 0
-}
-
-# enumerate_commands <dir>
-# Echoes one command file path per line.
-enumerate_commands() {
-  local dir="$1"
-  [[ -d "$dir" ]] || return 0
-  for f in "$dir"/*.md; do
-    [[ -f "$f" ]] && echo "$f"
-  done
 }
 
 # ── Routing table emission (grouped by category) ────────────────────────────
@@ -278,11 +286,141 @@ rewrite_tool_neutral() {
 }
 
 # ── Path placeholder rewriting ──────────────────────────────────────────────
-# Source files may reference .claude/ paths directly (because the repo's
-# canonical use was Claude Code). The path-rewrite helper translates them to
-# platform-specific equivalents (.codex/, .gemini/, .opencode/).
+# Command bodies name two kinds of path that only resolve under Claude Code:
+#
+#   1. The SKILL_ROOT placeholder. Claude Code supplies a "Skill root" value at
+#      session start; no other platform does. Every Python-backed command reads
+#      `uv run --directory "SKILL_ROOT" scripts/foo.py`, so SKILL_ROOT must
+#      become the directory that CONTAINS scripts/ and references/ in the built
+#      tree. Critically, the bare `scripts/foo.py` that follows is relative to
+#      --directory and must be left alone; prefixing it yields a double path.
+#
+#   2. Bare `references/...` paths in prose (references/ai-first-rules.md alone
+#      appears in every command). These are opened directly by the agent, so
+#      they need the platform prefix.
+#
+# Historically only a `.claude/` rule existed here. No command or reference file
+# contains a repo-relative `.claude/` path, so that rule matched nothing and the
+# real paths shipped unrewritten. It is kept below as a cheap safety net.
+
+# Rewrite SKILL_ROOT to the directory holding scripts/ and references/.
+# Pass "." for builds that ship those at the tree root (hermes).
+rewrite_skill_root() {
+  local file="$1" skill_root="$2"
+  [[ -f "$file" ]] || return 0
+  SKILL_ROOT_REPL="$skill_root" perl -i -pe 's{SKILL_ROOT}{$ENV{SKILL_ROOT_REPL}}g' "$file"
+}
+
+# Rewrite directly-named paths so they resolve inside the built tree.
+# Pass an empty platform_dir for builds that ship references/ at the root.
 rewrite_platform_paths() {
   local file="$1" platform_dir="$2"
   [[ -f "$file" ]] || return 0
-  perl -i -pe "s|\\.claude/|.${platform_dir}/|g;" "$file"
+  PLATFORM_DIR="$platform_dir" perl -i -pe '
+    my $d = $ENV{PLATFORM_DIR};
+    next unless length $d;
+    s|\.claude/|.$d/|g;
+    s~(^|[^A-Za-z0-9_./-])\.?/?references/~$1.$d/references/~g;
+  ' "$file"
+}
+
+# ── Shared emit helpers ─────────────────────────────────────────────────────
+# These bodies were duplicated across adapters, which is how pi ended up as the
+# one build shipping scripts with no pyproject.toml beside them (B19) and how
+# the reference-copy step drifted into applying a different set of rewrites per
+# platform (S16). One definition, so a fix lands everywhere at once.
+
+# copy_scripts_with_project <src-scripts-dir> <dst-scripts-dir>
+# Copies the Python toolkit AND the uv project beside it. `uv run --directory
+# <root>` needs the project to resolve both the module path and dependencies.
+copy_scripts_with_project() {
+  local src="$1" dst="$2"
+  [[ -d "$src" ]] || return 0
+  mkdir -p "$dst"
+  cp -R "$src/." "$dst/"
+  cp "$src/../pyproject.toml" "$(dirname "$dst")/pyproject.toml"
+}
+
+# copy_references_rewritten <src-refs-dir> <dst-refs-dir> <platform_dir>
+# Copies the shared specs and applies the same rewrites everywhere. Pass an
+# empty platform_dir for builds that ship references/ at their tree root.
+copy_references_rewritten() {
+  local src="$1" dst="$2" platform_dir="${3-}"
+  [[ -d "$src" ]] || return 0
+  mkdir -p "$dst"
+  cp -R "$src/." "$dst/"
+  local f
+  while IFS= read -r -d '' f; do
+    rewrite_tool_neutral "$f"
+    rewrite_platform_paths "$f" "$platform_dir"
+  done < <(find "$dst" -type f -name '*.md' -print0)
+}
+
+# format_triggers <raw-frontmatter-value>
+# Turns `["save this", "save the conversation"]` into `save this, save the
+# conversation`. Was copy-pasted byte-for-byte into three adapters.
+format_triggers() {
+  echo "$1" | tr -d '[]"' | sed 's/,/, /g; s/  */ /g; s/^ *//; s/ *$//'
+}
+
+# strip_quotes <value>
+# Frontmatter values may arrive single- or double-quoted. Four call sites
+# stripped a different subset, so the same description rendered clean on one
+# platform and garbled on another.
+strip_quotes() {
+  local v="$1"
+  v="${v#\"}"; v="${v%\"}"
+  v="${v#\'}"; v="${v%\'}"
+  printf '%s' "$v"
+}
+
+# emit_ai_first_rule <references_path>
+# Step 3 of every dispatcher's "How to operate" block: the AI-first write spec
+# summary. Was hand-copied into four adapters with only the path differing,
+# which is exactly how B21 happened - two of the four cited a path that did not
+# exist in their own build, and nobody noticed because each was maintained
+# separately. CLAUDE.md says this rule must change in lockstep across platforms;
+# one definition is what makes that true rather than aspirational.
+emit_ai_first_rule() {
+  local refs_path="$1"
+  cat <<EOF
+3. Treat the AI-first vault rule (\`${refs_path}\`) as
+   non-negotiable for every note you write: \`## For future Claude\` preamble,
+   rich frontmatter (\`type\`, \`date\`, \`tags\`, \`ai-first: true\`),
+   \`[[wikilinks]]\` for every person/project/concept, recency markers per
+   external claim, sources verbatim, confidence levels where applicable.
+EOF
+}
+
+# owner_of <platform>
+# The claimed owner of a platform build, from the table in adapters/OWNERS.md,
+# or empty when unclaimed. OWNERS.md is the single source of truth so the table
+# a person edits and the credit that ships are never two separate edits.
+owner_of() {
+  local platform="$1" owners="${REPO_ROOT:-.}/adapters/OWNERS.md"
+  [[ -f "$owners" ]] || return 0
+  LC_ALL=C awk -v p="$platform" '
+    /<!-- owners:start -->/ { on = 1; next }
+    /<!-- owners:end -->/   { on = 0 }
+    on && /^\|/ {
+      # | platform | owner | previously |
+      split($0, f, "|")
+      gsub(/^[ \t]+|[ \t]+$/, "", f[2])
+      gsub(/^[ \t]+|[ \t]+$/, "", f[3])
+      if (f[2] == p && f[3] != "unclaimed" && f[3] != "Owner" && f[3] != "") { print f[3]; exit }
+    }
+  ' "$owners"
+}
+
+# append_owner_credit <dist_dir> <platform>
+# Ships the credit inside the artifact rather than only in a table in the repo.
+# A named owner on the install page a user actually reads is the whole incentive
+# the ownership model runs on; a row in a governance file nobody opens is not.
+append_owner_credit() {
+  local dst="$1" platform="$2" owner
+  owner="$(owner_of "$platform")"
+  [[ -n "$owner" ]] || return 0
+  [[ -f "$dst/INSTALL.md" ]] || return 0
+  printf '\n---\n\nThis build is maintained by %s. Issues specific to this platform are theirs to triage: https://github.com/eugeniughelbur/obsidian-second-brain/issues\n' \
+    "$owner" >> "$dst/INSTALL.md"
 }

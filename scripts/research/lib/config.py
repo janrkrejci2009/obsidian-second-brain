@@ -1,8 +1,9 @@
 """Loads research-toolkit credentials and model defaults from ~/.config/obsidian-second-brain/.env"""
 
-from pathlib import Path
-from dotenv import load_dotenv
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 CONFIG_DIR = Path.home() / ".config" / "obsidian-second-brain"
 ENV_PATH = CONFIG_DIR / ".env"
@@ -39,7 +40,9 @@ TAVILY_API_KEY = lambda: get_required("TAVILY_API_KEY")
 TAVILY_SEARCH_DEPTH = get_optional("TAVILY_SEARCH_DEPTH", "basic")
 TAVILY_MAX_RESULTS = int(get_optional("TAVILY_MAX_RESULTS", "10"))
 
-GROK_MODEL = get_optional("GROK_MODEL", "grok-4")
+# grok-4 no longer appears in GET /v1/models (it still resolves server-side, but is
+# unlisted). grok-4.5 is current and verified against the x_search tool.
+GROK_MODEL = get_optional("GROK_MODEL", "grok-4.5")
 PERPLEXITY_RESEARCH_MODEL = get_optional("PERPLEXITY_RESEARCH_MODEL", "sonar-pro")
 PERPLEXITY_DEEP_MODEL = get_optional("PERPLEXITY_DEEP_MODEL", "sonar-deep-research")
 NOTEBOOKLM_MODEL = get_optional("NOTEBOOKLM_MODEL", "gemini-2.5-flash")

@@ -2,6 +2,8 @@
 description: Load your identity, values, priorities, and current state in one shot - with progressive context levels to avoid burning tokens
 category: vault
 triggers_en: ["load context", "what is going on", "where am I", "load my world"]
+triggers_es: ["carga el contexto", "qué está pasando", "dónde estoy", "carga mi mundo"]
+triggers_pt: ["carregue contexto", "o que está acontecendo", "onde estou", "carregue meu mundo"]
 ---
 
 Use the obsidian-second-brain skill. Execute `/obsidian-world`:
@@ -30,7 +32,7 @@ Use the obsidian-second-brain skill. Execute `/obsidian-world`:
    **L3 - Deep Context (on demand, ~5-20K tokens)**
    - Only load if needed for a specific question or task
    - Read active project notes (status: active) for current goals and blockers
-   - Read full source articles from Knowledge/ if the user asks about a specific topic
+   - Read full source/reference notes (the concept or knowledge folder per `references/folder-map.md` - wiki-style `wiki/concepts/` or `raw/`, Obsidian-style `Knowledge/`) if the user asks about a specific topic
    - Identify key people interacted with recently (last 7 days of daily notes)
 
 3. Present a brief status after L0-L2 (do NOT load L3 unless needed):

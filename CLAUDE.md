@@ -2,16 +2,16 @@
 
 Operating instructions for Claude Code when working inside this repo.
 
-This is the source repo for **obsidian-second-brain**, a Claude Code skill that turns any Obsidian vault into a living AI-first second brain. The skill ships 32 slash commands across 4 layers (vault management, thinking tools, research toolkit, scheduled agents).
+This is the source repo for **obsidian-second-brain**, a Claude Code skill that turns any Obsidian vault into a living AI-first second brain. The skill ships 46 slash commands across 4 layers (vault management, thinking tools, research toolkit, scheduled agents).
 
 If you are Claude operating on a user's vault, you want `_CLAUDE.md` inside their vault, not this file. This file is for working on the skill's source code.
 
 ## Repo layout
 
-- `commands/` - 32 slash command definitions, one `.md` per command. **This is the platform-neutral source.** Adapters compile it for each platform.
+- `commands/` - 45 slash command definitions, one `.md` per command. **This is the platform-neutral source.** Adapters compile it for each platform.
 - `references/` - shared specs that commands link to. **`ai-first-rules.md` is the canonical vault-write spec** and is non-negotiable.
 - `scripts/` - Python helpers (`bootstrap_vault.py`, `vault_health.py`, the `research/` toolkit), plus `build.sh` (the adapter orchestrator) and `lib.sh`.
-- `adapters/` - platform translation layer. `lib.sh` holds shared parsing helpers. `claude-code/`, `codex-cli/`, `gemini-cli/`, `opencode/` each ship an `adapter.sh`.
+- `adapters/` - platform translation layer. `lib.sh` holds shared parsing helpers. `claude-code/`, `codex-cli/`, `gemini-cli/`, `opencode/`, `hermes/`, `pi/`, `agent-skills/` each ship an `adapter.sh`.
 - `dist/` - build output, one tree per platform. **Gitignored.** Regenerate with `bash scripts/build.sh` (all platforms) or `bash scripts/build.sh --platform <name>`.
 - `hooks/` - Claude Code hooks shipped with the skill.
 - `SKILL.md` - full operating manual loaded by Claude when the skill activates.
@@ -22,7 +22,7 @@ If you are Claude operating on a user's vault, you want `_CLAUDE.md` inside thei
 
 ### The adapter pattern
 
-Source files in `commands/` use Claude Code's slash-command shape. The Claude Code adapter is an identity copy. The other three adapters (Codex CLI, Gemini CLI, OpenCode) emit a platform-appropriate dispatcher file (`AGENTS.md` or `GEMINI.md`) at the dist root with an **auto-generated routing table** built from each command's `description:` frontmatter, plus the command bodies under `.codex/commands/` (or `.gemini/`, `.opencode/`). Tool-name references like `Read tool` are rewritten to neutral wording (`read files`) so the instructions still make sense outside Claude Code.
+Source files in `commands/` use Claude Code's slash-command shape. The Claude Code adapter is an identity copy. The other adapters translate per platform: `codex-cli`, `hermes`, and `agent-skills` emit **native skills** (one `SKILL.md` per command; `agent-skills` is a single spec-compliant `.agents/skills/` tree that Codex, OpenCode, and Google Antigravity all read, with a shared `obsidian-core` engine skill), `pi` emits a Pi package (`.pi/prompts/` + `.pi/skills/`), and `gemini-cli` / `opencode` emit a dispatcher file (`GEMINI.md` / `AGENTS.md`) with an **auto-generated routing table** built from each command's `description:` frontmatter, plus the command bodies under `.gemini/` / `.opencode/`. Tool-name references like `Read tool` are rewritten to neutral wording (`read files`) so the instructions still make sense outside Claude Code.
 
 **When adding a new command, only edit `commands/<name>.md`.** The adapters pick it up automatically on the next build. Optional frontmatter fields: `exclude: [<platform>]` to opt out per platform.
 
@@ -42,7 +42,7 @@ If you are editing a command file in `commands/`, do not rewrite the AI-first pr
 ## Conventions
 
 - **Markdown:** sentence-case headers (`## What it does`, not `## What It Does`). No emojis in command files. No substitution Unicode in source files, docs, or commits: em-dashes (`—`), en-dashes (`–`), curly/smart quotes, and Unicode math substitutions (`≥ ≤ ≠`) are banned. Allowed: box-drawing chars (`─` U+2500-257F), arrows (`→ ←`), currency symbols (`€ £ ¥`), and Nerd Font / private-use codepoints - all carry semantic meaning rather than substituting for ASCII. Enforced by `hooks/validate-ai-first.sh` check 5 on vault writes.
-- **Python:** ruff with `line-length = 100`, target `py310`. Type hints encouraged, not required.
+- **Python:** ruff, target `py310`. CI runs `ruff check .`; the gated rule set is pinned in `pyproject.toml` under `[tool.ruff.lint]` and is currently pyflakes (`F`) only, with a comment there listing what is excluded and why. `line-length = 100` is the formatting convention, not a build-breaking rule - there are 203 existing violations, so gating it means fixing that backlog first, not adding a noqa sweep.
 - **Commits:** imperative mood (`Add`, `Fix`, `Update`). Co-author Claude when pair-programmed.
 - **Frontmatter:** YAML, double-quoted strings when in doubt, lowercase tag values.
 
@@ -64,13 +64,21 @@ ln -s "$(pwd)" ~/.claude/skills/obsidian-second-brain
 ln -s commands/* ~/.claude/commands/
 ```
 
-Then restart Claude Code and run the command against a test vault. There is no automated test suite yet - verification is manual: run the command, inspect the resulting vault notes, confirm AI-first compliance.
+Then restart Claude Code and run the command against a test vault. Command behavior itself is still verified manually: run the command, inspect the resulting vault notes, confirm AI-first compliance.
+
+There is a smoke-test suite (`tests/test_smoke.py`) that guards the build pipeline (adapter output paths, `vault_health` JSON, OKF export, and similar). CI runs it on every push. Run it locally before pushing any change to `adapters/`, `scripts/`, or `commands/`:
+
+```bash
+uv run pytest -q
+```
+
+If you change an adapter's output layout, update the matching assertion in `tests/test_smoke.py` in the same commit.
 
 ## Release process
 
 1. PRs land on `main` only when CI is green and the AI-first rule is upheld.
 2. Move "Unreleased" entries in `CHANGELOG.md` under a new version header with the release date.
-3. Bump version in `pyproject.toml` and `CITATION.cff`.
+3. Bump version in `pyproject.toml`, `CITATION.cff`, `.claude-plugin/plugin.json`, and `.claude-plugin/marketplace.json` (metadata + plugin entry; `tests/test_plugin_manifest.py` fails CI if these drift from pyproject).
 4. Tag and push: `git tag v0.X.0 && git push origin v0.X.0`.
 5. Cut a GitHub Release with notes copied from the CHANGELOG entry.
 

@@ -7,40 +7,67 @@ Audits an Obsidian vault for structural issues:
 - Orphaned notes (no incoming links)
 - Stale tasks (overdue, no recent activity)
 - Notes missing frontmatter
+- Notes with frontmatter trapped in a leading ```markdown code fence (unwrap, do not add)
 - Empty folders
-- Broken internal links
+- Wanted notes (links to notes not written yet - a wishlist, not errors)
 - Templates left in notes (unfilled Templater syntax)
 
 Usage:
     python vault_health.py --path ~/my-vault
     python vault_health.py --path ~/my-vault --json     # JSON output (for Claude)
+
+Optional per-vault config at `<vault>/.vault-config.json` extends the built-in
+exclude list (additive, never overrides the hardcoded EXCLUDE_DIRS):
+    {
+      "exclude-dirs":  ["_card-pool", "_candidates"],  # dir names anywhere in the tree
+      "exclude-paths": ["Archive/Backup"]              # vault-relative path prefixes
+    }
+A missing or malformed file is ignored silently. See VaultExcludes.
 """
 
 import argparse
+import difflib
+import fnmatch
 import json
 import re
+import sys
+import sys as _sys
+import unicodedata
 from collections import defaultdict
-from fnmatch import fnmatch
 from datetime import date
 from pathlib import Path
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
+from vault_scan import BASE_EXCLUDE_DIRS  # noqa: E402
 
 TODAY = date.today()
-EXCLUDE_DIRS = {".obsidian", ".trash", "_trash", ".git", "Templates"}
+# Shared base, see scripts/vault_scan.py. This module owns the user-facing
+# extension point (.vault-config.json via VaultExcludes); the base is the floor.
+EXCLUDE_DIRS = frozenset(d.lower() for d in BASE_EXCLUDE_DIRS)
+# The file index deliberately keeps Templates visible: a link pointing AT a
+# template should still resolve, even though templates are not scanned as notes.
+FILE_INDEX_EXCLUDE_DIRS = EXCLUDE_DIRS - {"templates"}
+EXCLUDE_ROOT_FILES = {"AGENTS.md", "INSTALL.md"}
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---", re.DOTALL)
+# A note whose entire body was accidentally saved inside a ```markdown code fence:
+# the first non-blank line opens a fence and the real frontmatter (---) lives INSIDE it.
+# This must be detected separately from genuinely-missing frontmatter, because the naive
+# "add frontmatter" fix prepends a SECOND frontmatter block and leaves the body trapped
+# in the fence (double corruption). The correct fix is to UNWRAP, not to add.
+CODE_FENCE_WRAP_RE = re.compile(r"\A\s*```[^\n]*\n\s*---\s*\n")
 LINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
 DATE_RE = re.compile(r"due:\s*(\d{4}-\d{2}-\d{2})")
 TEMPLATE_RE = re.compile(r"<%.*?%>")
-ALIAS_RE = re.compile(r"^aliases:\s*\n((?:\s+-\s+.+\n?)+)", re.MULTILINE)
-ALIAS_ITEM_RE = re.compile(r"^\s+-\s+(.+)$", re.MULTILINE)
+# `\s*-\s*`, not `\s+-\s+`: a list written with the dash at column 0, or with
+# no space after it, is valid YAML. Requiring surrounding whitespace made those
+# aliases invisible here while link_graph (which uses `\s*`) resolved them, so
+# the same note was an orphan to one tool and linked to the other.
+ALIAS_RE = re.compile(r"^aliases:\s*\n((?:\s*-\s*.+\n?)+)", re.MULTILINE)
+ALIAS_ITEM_RE = re.compile(r"^\s*-\s*(.+)$", re.MULTILINE)
 # Inline forms Obsidian also accepts: `aliases: [a, b]` and `aliases: foo`.
 ALIAS_INLINE_LIST_RE = re.compile(r"^aliases:\s*\[(.+?)\]\s*$", re.MULTILINE)
 ALIAS_SCALAR_RE = re.compile(r"^aliases:\s*([^\[\n].*?)\s*$", re.MULTILINE)
-
-# Default meta files whose wikilinks are content listings (health reports echo
-# every link they audit, the activity log points at notes by name), not real
-# references. Skipping them from the broken-link scan removes the bulk of the
-# false positives. Matched as glob patterns against the vault-relative path.
-DEFAULT_LINK_SCAN_EXCLUDES = ("log.md", "_CLAUDE.md", "Reviews/Saúde do Vault*.md")
 
 
 def _clean_alias(value: str) -> str:
@@ -50,8 +77,9 @@ def _clean_alias(value: str) -> str:
 def parse_aliases(frontmatter: str) -> list:
     """Extract aliases from frontmatter, supporting all three Obsidian forms:
 
-    block list (``aliases:`` then ``  - item``), inline list (``aliases: [a, b]``),
-    and a single scalar (``aliases: foo``). Returns lowercased, unquoted values.
+    block list (``aliases:`` then ``  - item``, dash spacing flexible per YAML),
+    inline list (``aliases: [a, b]``), and a single scalar (``aliases: foo``).
+    Returns lowercased, unquoted values.
     """
     block = ALIAS_RE.search(frontmatter)
     if block:
@@ -69,17 +97,176 @@ def parse_aliases(frontmatter: str) -> list:
     return []
 
 
-def load_vault(vault: Path) -> dict:
-    notes = {}
-    for md in vault.rglob("*.md"):
-        parts = md.relative_to(vault).parts
-        if any(p in EXCLUDE_DIRS for p in parts):
+class VaultExcludes:
+    """Additive, user-configured exclusions loaded from `<vault>/.vault-config.json`.
+
+    Large or academic vaults carry directories that are pure noise to a health
+    scan (atomic-card pools, backup snapshots, imported transcription dumps).
+    Hardcoding every one into EXCLUDE_DIRS does not scale, and on a 10k+ note
+    vault the false positives drown the real findings. A vault can extend the
+    skip list per-vault instead; the hardcoded EXCLUDE_DIRS always applies on top.
+
+        {
+          "exclude-dirs":  ["_card-pool", "_candidates"],  # dir names, matched as path components
+          "exclude-paths": ["Archive/Backup"],             # vault-relative path prefixes (POSIX)
+          "exclude-link-scan": ["Meetings/2024-*"]         # globs: notes whose OUTGOING links are not audited
+        }
+
+    `exclude-link-scan` exists because some notes echo every link they mention
+    without owning them - activity logs and prior health reports quote broken
+    links verbatim, so auditing them re-reports each finding once per echo
+    (fork-insights round 2). Built-in defaults: `_CLAUDE.md`, `log.md`, and
+    `Vault Health*` / `Saude do Vault*` report notes. Globs match the bare
+    filename and the vault-relative path.
+    """
+
+    __slots__ = ("dirs", "paths", "link_scan")
+
+    #: Notes whose outgoing links are never audited (see class docstring).
+    DEFAULT_LINK_SCAN_EXCLUDES = (
+        "_CLAUDE.md",
+        "log.md",
+        "Vault Health*",
+        "Reviews/Saúde do Vault*.md",
+    )
+
+    def __init__(self, dirs=None, paths=None, link_scan=None):
+        self.dirs = dirs or set()
+        self.paths = paths or []
+        self.link_scan = list(self.DEFAULT_LINK_SCAN_EXCLUDES) + list(link_scan or [])
+
+    def skip(self, parts, rel_posix) -> bool:
+        """True if a vault path is excluded from the scan (hardcoded + user rules)."""
+        # Casefolded: the bootstrapper writes Templates/ while three sibling
+        # tools spelled it templates, so the same folder was skipped or scanned
+        # depending on which tool ran.
+        lowered = [str(p).lower() for p in parts]
+        if any(p in EXCLUDE_DIRS for p in lowered):
+            return True
+        if self.dirs and any(p in {d.lower() for d in self.dirs} for p in lowered):
+            return True
+        return any(rel_posix == pre or rel_posix.startswith(pre + "/") for pre in self.paths)
+
+    def skip_link_scan(self, rel_posix: str) -> bool:
+        """True if this note's OUTGOING links are excluded from the audit.
+        The note itself still resolves as a link target and is scanned by
+        every other check - only its outgoing-link report is suppressed."""
+        name = rel_posix.rsplit("/", 1)[-1]
+        return any(
+            fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(rel_posix, pat)
+            for pat in self.link_scan
+        )
+
+    def skip_file_index(self, parts) -> bool:
+        """True if a path is excluded from the file index used for link resolution.
+
+        Only the hardcoded FILE_INDEX_EXCLUDE_DIRS (Templates stay indexed so
+        template assets still resolve) and the user's noisy `exclude-dirs` are
+        pruned here. User `exclude-paths` are deliberately NOT applied, so a live
+        link into an excluded path still resolves instead of ringing as broken."""
+        if any(p in FILE_INDEX_EXCLUDE_DIRS for p in parts):
+            return True
+        return bool(self.dirs) and any(p in self.dirs for p in parts)
+
+
+# Shared "nothing extra excluded" instance for callers that pass no config.
+_NO_EXCLUDES = VaultExcludes()
+
+
+def load_vault_config(vault: Path) -> VaultExcludes:
+    """Read `<vault>/.vault-config.json` if present. A missing or malformed file
+    is silently ignored (returns empty excludes): a health check must never fail
+    because of its own optional config file."""
+    cfg_path = vault / ".vault-config.json"
+    if not cfg_path.is_file():
+        return VaultExcludes()
+    try:
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return VaultExcludes()
+    if not isinstance(data, dict):
+        return VaultExcludes()
+    raw_dirs = data.get("exclude-dirs", [])
+    raw_paths = data.get("exclude-paths", [])
+    raw_link = data.get("exclude-link-scan", [])
+    dirs = set()
+    if isinstance(raw_dirs, list):
+        dirs = {d for d in raw_dirs if isinstance(d, str) and d}
+    paths = []
+    if isinstance(raw_paths, list):
+        paths = [p.strip("/") for p in raw_paths if isinstance(p, str) and p.strip("/")]
+    link_scan = []
+    if isinstance(raw_link, list):
+        link_scan = [g for g in raw_link if isinstance(g, str) and g]
+    return VaultExcludes(dirs, paths, link_scan)
+
+
+def index_vault_files(vault: Path, excludes=None) -> set:
+    """Lowercased relative paths and bare filenames of every non-excluded vault file.
+
+    Wikilinks can target non-markdown assets ([[Bases/Tasks.base]], [[map.canvas]],
+    [[control-center.html]]) or carry an explicit extension ([[_CLAUDE.md]]). The
+    .md-note stem index alone cannot resolve those, so broken-link checks also
+    consult this full-file index.
+    """
+    excludes = excludes or _NO_EXCLUDES
+    files = set()
+    for f in vault.rglob("*"):
+        parts = f.relative_to(vault).parts
+        if excludes.skip_file_index(parts):
             continue
-        rel = str(md.relative_to(vault))
-        content = md.read_text(encoding="utf-8", errors="replace")
+        if len(parts) == 1 and parts[0] in EXCLUDE_ROOT_FILES:
+            continue
+        if not f.is_file():
+            continue
+        files.add(_nfc(f.relative_to(vault).as_posix()).lower())
+        files.add(_nfc(f.name).lower())
+    return files
+
+
+def load_vault(vault: Path, excludes=None, only: str | None = None) -> dict:
+    """Parse every note under `vault` into {rel: note-dict}.
+
+    `only` restricts the walk to a single vault-relative path. heal_links
+    rewrites one file per iteration and previously re-read the entire vault to
+    learn about it; a full rglob to re-parse one note is the expensive part of
+    that loop. Same parsing path either way, so the two cannot drift.
+    """
+    excludes = excludes or _NO_EXCLUDES
+    notes = {}
+    source = [vault / only] if only else vault.rglob("*.md")
+    for md in source:
+        parts = md.relative_to(vault).parts
+        # Also skip any template folder (Templates, 20_Templates, ...): its
+        # <%...%> Templater syntax is intentional, not a "template leftover" bug.
+        if len(parts) == 1 and parts[0] in EXCLUDE_ROOT_FILES:
+            continue
+        if any(p.lower().endswith("templates") for p in parts):
+            continue
+        if excludes.skip(parts, md.relative_to(vault).as_posix()):
+            continue
+        # rglob matches names, not files: a dangling symlink or a directory named
+        # *.md would crash the read and abort the whole scan (stress-test fix 2/24).
+        if not md.is_file():
+            continue
+        # POSIX form, not str(): on Windows str(WindowsPath) yields backslashes,
+        # so every `rel.split("/")` below saw no separator. Top-folder logic then
+        # returned "" for every note, and the whole skip_folders/dated-series
+        # exemption collapsed - every note under Daily/, Journal/, Private/ was
+        # reported as an orphan. CI is ubuntu-only so nothing caught it.
+        # Consumers rebuild paths as `vault / rel`, which accepts forward slashes
+        # on Windows, so no downstream change is needed.
+        rel = md.relative_to(vault).as_posix()
+        try:
+            content = md.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            continue
         fm_match = FRONTMATTER_RE.match(content)
         frontmatter = fm_match.group(1) if fm_match else ""
-        links = [l.strip().rstrip("\\") for l in LINK_RE.findall(content)]
+        # Strip fenced/inline code before extracting links so shell snippets like
+        # `[[ -z "$VAR" ]]` are not stored as wikilinks. These links feed the orphan
+        # check (all_links); leaving code noise in masks real orphans (issue #93).
+        links = [l.strip().rstrip("\\") for l in LINK_RE.findall(_strip_code(content))]
         due_match = DATE_RE.search(frontmatter)
         notes[rel] = {
             "path": md,
@@ -88,6 +275,7 @@ def load_vault(vault: Path) -> dict:
             "content": content,
             "frontmatter": frontmatter,
             "has_frontmatter": bool(fm_match),
+            "code_fence_wrapped": bool(not fm_match and CODE_FENCE_WRAP_RE.match(content)),
             "links": links,
             "aliases": parse_aliases(frontmatter),
             "due": due_match.group(1) if due_match else None,
@@ -96,41 +284,91 @@ def load_vault(vault: Path) -> dict:
     return notes
 
 
+# Folders whose notes recur by date with a shared descriptive title (e.g. a
+# "Weekly Review" every Friday). Same title across dates is expected here, not a
+# duplicate, so they are exempt from duplicate detection (issue #82).
+DATED_SERIES_FOLDERS = {"daily", "logs", "dev logs", "reviews"}
+
+
+def _norm_title(stem: str) -> str:
+    """Normalize a filename stem to a comparable title. Keeps digits and dates -
+    the old version stripped ISO dates, which collapsed every dated note in a
+    series onto one bucket and flagged them all as duplicates (issue #82)."""
+    norm = re.sub(r"[^a-z0-9 ]", " ", stem.lower())
+    return re.sub(r"\s+", " ", norm).strip()
+
+
+def _max_pairwise_similarity(notes: dict, files: list) -> float:
+    """Largest body-text similarity ratio among a set of notes (first 1000 chars).
+    Used as the content signal that separates real duplicates from notes that
+    merely share a title."""
+    # Compare prose, not skeleton: every AI-first note shares frontmatter keys
+    # and the "## For future Claude" preamble heading, and that shared
+    # boilerplate alone pushed two unrelated notes to 0.80 similarity
+    # (stress-test fix 8/24). Strip what all notes share, compare what's unique.
+    def _prose(rel: str) -> str:
+        text = FRONTMATTER_RE.sub("", notes[rel]["content"], count=1)
+        text = text.replace("## For future Claude", "")
+        return re.sub(r"\s+", " ", text).strip()[:1000]
+
+    bodies = [_prose(f) for f in files]
+    best = 0.0
+    for i in range(len(bodies)):
+        for j in range(i + 1, len(bodies)):
+            best = max(best, difflib.SequenceMatcher(None, bodies[i], bodies[j]).ratio())
+    return best
+
+
 def check_duplicates(notes: dict) -> list:
     issues = []
-    stems = defaultdict(list)
+    groups = defaultdict(list)
     for rel, note in notes.items():
-        norm = re.sub(r"\d{4}-\d{2}-\d{2}", "", note["stem"]).lower()
-        norm = re.sub(r"[^a-z0-9 ]", " ", norm).strip()
-        norm = re.sub(r"\s+", " ", norm)
-        stems[norm].append(rel)
-    for norm, files in stems.items():
-        if len(files) > 1 and norm.strip():
-            issues.append({
-                "type": "duplicate",
-                "severity": "warning",
-                "message": f"Possible duplicates: {norm!r}",
-                "files": files,
-            })
+        parts = [p.lower() for p in rel.split("/")[:-1]]
+        if any(p in DATED_SERIES_FOLDERS for p in parts):
+            continue
+        norm = _norm_title(note["stem"])
+        if norm:
+            groups[norm].append(rel)
+    for norm, files in groups.items():
+        if len(files) <= 1:
+            continue
+        # Content signal: high body similarity => likely a real duplicate
+        # (warning); low => same title but different content (info, less noise).
+        similar = _max_pairwise_similarity(notes, files) >= 0.6
+        issues.append({
+            "type": "duplicate",
+            "severity": "warning" if similar else "info",
+            "message": (
+                f"{'Likely duplicates' if similar else 'Same title, different content'}: {norm!r}"
+            ),
+            "files": files,
+        })
     return issues
 
 
 def check_orphans(notes: dict) -> list:
-    all_links = set()
-    for note in notes.values():
+    # key -> set of source notes that link to it. Tracking the SOURCE matters:
+    # a note's own links must not count as incoming (a self-link is the note
+    # vouching for itself), and exact keys replace the old substring test that
+    # let a short stem like "ai" hide inside "detail" and never ring the alarm
+    # (stress-test fix 8/24). Path-qualified links count via their basename.
+    link_sources: dict[str, set] = defaultdict(set)
+    for src_rel, note in notes.items():
         for link in note["links"]:
-            all_links.add(link.lower())
-            all_links.add(link.lower().replace(" ", "-"))
+            lk = _nfc(link).lower()
+            # An incoming link may carry the .md extension ([[note.md]]); it still
+            # targets the same note, so strip it before matching against stems.
+            if lk.endswith(".md"):
+                lk = lk[:-3]
+            for key in {lk, lk.replace(" ", "-"), lk.rsplit("/", 1)[-1]}:
+                link_sources[key].add(src_rel)
 
-    # also treat aliases as resolvable targets
-    alias_set = set()
-    for note in notes.values():
-        for alias in note["aliases"]:
-            alias_set.add(alias.lower())
+    def _has_incoming(rel: str, keys) -> bool:
+        return any(link_sources.get(k, set()) - {rel} for k in keys)
 
     issues = []
     skip_folders = {"Daily", "Dev Logs", "Boards", "Templates", "Life Chapters",
-                    "Faith", "Reviews", "Partner", "Family"}
+                    "Private", "Journal", "Faith", "Reviews", "Partner", "Family"}
 
     for rel, note in notes.items():
         top_folder = rel.split("/")[0] if "/" in rel else ""
@@ -138,13 +376,10 @@ def check_orphans(notes: dict) -> list:
             continue
         if rel in ("Home.md", "_CLAUDE.md"):
             continue
-        stem_lower = note["stem"].lower()
+        stem_lower = _nfc(note["stem"]).lower()
         stem_norm = stem_lower.replace("-", " ").replace("_", " ")
-        linked = (
-            stem_lower in all_links
-            or stem_norm in all_links
-            or any(stem_lower in lk for lk in all_links)
-            or any(alias in all_links for alias in note["aliases"])
+        linked = _has_incoming(
+            rel, {stem_lower, stem_norm, *(_nfc(a) for a in note["aliases"])}
         )
         if not linked:
             issues.append({
@@ -186,6 +421,10 @@ def check_missing_frontmatter(notes: dict) -> list:
             continue
         if rel in ("Home.md", "_CLAUDE.md"):
             continue
+        if note.get("code_fence_wrapped"):
+            # Reported by check_code_fence_wrapped instead. The frontmatter exists but is
+            # trapped in a code fence - adding a new block here would duplicate it.
+            continue
         if not note["has_frontmatter"] and note["size"] > 50:
             issues.append({
                 "type": "no_frontmatter",
@@ -196,10 +435,35 @@ def check_missing_frontmatter(notes: dict) -> list:
     return issues
 
 
-def check_empty_folders(vault: Path) -> list:
+def check_code_fence_wrapped(notes: dict) -> list:
+    """Notes whose frontmatter + body were accidentally saved inside a leading ```markdown
+    code fence. Flagged separately (and as an error) because the fix is to UNWRAP the fence,
+    NOT to add frontmatter - the naive add-frontmatter fix produces duplicate frontmatter."""
+    issues = []
+    skip = {"Templates", "_trash", ".obsidian"}
+    for rel, note in notes.items():
+        if any(s in rel for s in skip):
+            continue
+        if note.get("code_fence_wrapped"):
+            issues.append({
+                "type": "code_fence_wrapped",
+                "severity": "error",
+                "message": f"Frontmatter trapped in a code fence - unwrap, don't add: {rel}",
+                "files": [rel],
+            })
+    return issues
+
+
+def check_empty_folders(vault: Path, excludes=None) -> list:
+    excludes = excludes or _NO_EXCLUDES
     issues = []
     for folder in vault.rglob("*/"):
-        if any(p in EXCLUDE_DIRS for p in folder.parts):
+        # Relative parts, like every other call site. `folder` is absolute here,
+        # so folder.parts included every ancestor outside the vault - a vault
+        # under any dir named Templates/.git/_export silently skipped every
+        # folder and the check reported zero findings with no warning.
+        _rel = folder.relative_to(vault)
+        if excludes.skip(_rel.parts, _rel.as_posix()):
             continue
         if not folder.is_dir():
             continue
@@ -214,6 +478,139 @@ def check_empty_folders(vault: Path) -> list:
     return issues
 
 
+SEMANTIC_INDEX_FILE = ".obsidian-semantic-index.json"
+# A note key inside the index. Paths end in .md and every other string in the
+# file is a model name or a bare number, so this cannot match a vector element.
+_INDEX_KEY_RE = re.compile(r'"((?:[^"\\]|\\.)+?\.md)"\s*:\s*\{')
+# Below this share of the vault missing, an index is "current enough" - a couple
+# of notes written since the last build is normal, not a problem to report.
+INDEX_STALE_PCT = 5.0
+
+
+def _indexed_paths(index_path: Path, chunk: int = 1 << 20) -> set:
+    """Note paths present in the semantic index, read as a stream.
+
+    The index is vectors, so it runs to tens of megabytes on a real vault (66MB
+    at 1,300 notes). json.loads would make every health check pay for parsing
+    every float to answer a question about keys, so this scans in chunks with an
+    overlap wide enough that a key split across a boundary is still matched.
+
+    `chunk` is a parameter only so the seam behaviour can be tested deterministically
+    at a small size; at the default a note key cannot span two boundaries.
+    """
+    found = set()
+    tail = ""
+    with index_path.open("r", encoding="utf-8", errors="replace") as fh:
+        while block := fh.read(chunk):
+            buf = tail + block
+            found.update(m.group(1) for m in _INDEX_KEY_RE.finditer(buf))
+            tail = buf[-4096:]
+    return found
+
+
+def check_semantic_index(vault: Path, notes) -> list:
+    """Notes the semantic index does not cover.
+
+    The index is built on demand and never invalidates itself - the README even
+    said to "build the index once" - so it silently drifts behind the vault. A
+    missing note is still findable by literal word match, but nothing else: on a
+    query in a language the note is not written in, the lexical arm contributes
+    nothing and the note cannot be retrieved at all. Measured at 29% of a real
+    vault uncovered, with no warning anywhere.
+    """
+    index_path = vault / SEMANTIC_INDEX_FILE
+    if not index_path.exists():
+        return []  # semantic search is optional; not having it is not a defect
+    indexed = _indexed_paths(index_path)
+    if not indexed:
+        return [{
+            "type": "semantic_index",
+            "severity": "warning",
+            "message": (f"{SEMANTIC_INDEX_FILE} exists but no notes could be read from it; "
+                        "semantic search is falling back to literal word match"),
+            "files": [],
+        }]
+    missing = sorted(rel for rel in notes if rel not in indexed)
+    if not missing:
+        return []
+    pct = 100.0 * len(missing) / len(notes)
+    if pct < INDEX_STALE_PCT:
+        return []
+    return [{
+        "type": "semantic_index",
+        "severity": "warning",
+        "message": (
+            f"Semantic index covers {len(notes) - len(missing)} of {len(notes)} notes; "
+            f"{len(missing)} ({pct:.0f}%) are missing and can only be found by literal "
+            f"word match. Rebuild: uv run python scripts/eval/semantic_search.py "
+            f'--path "{vault}" --build'
+        ),
+        "files": missing[:20],
+    }]
+
+
+# Built from code points so the source stays ASCII and the non-ASCII sweep
+# (scripts/sweep_non_ascii.py) can never rewrite these operands again (#63).
+_EM_DASH, _EN_DASH = "\u2014", "\u2013"
+
+
+CODE_FENCE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
+INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+
+
+def _strip_code(text: str) -> str:
+    """Remove fenced code blocks and inline code so example/placeholder wikilinks
+    inside them (`[[wikilinks]]`, `[[Related Project]]`) are not scanned as real
+    links (issue #82)."""
+    return INLINE_CODE_RE.sub("", CODE_FENCE_BLOCK_RE.sub("", text))
+
+
+def _replace_between(pattern, text: str, old: str, new: str) -> tuple[str, int]:
+    out, last, n = [], 0, 0
+    for m in pattern.finditer(text):
+        seg = text[last:m.start()]
+        n += seg.count(old)
+        out.append(seg.replace(old, new))
+        out.append(m.group(0))
+        last = m.end()
+    seg = text[last:]
+    n += seg.count(old)
+    out.append(seg.replace(old, new))
+    return "".join(out), n
+
+
+def replace_outside_code(text: str, old: str, new: str) -> tuple[str, int]:
+    """Replace old -> new everywhere EXCEPT inside fenced blocks and inline code.
+
+    The link counters ignore code (_strip_code), so anything that EDITS links must
+    ignore it too - otherwise dry-run promises N changes and apply makes more,
+    corrupting example code (stress-test fix 3/24). Returns (new_text, count)."""
+    out, last, total = [], 0, 0
+    for m in CODE_FENCE_BLOCK_RE.finditer(text):
+        seg, n = _replace_between(INLINE_CODE_RE, text[last:m.start()], old, new)
+        total += n
+        out.append(seg)
+        out.append(m.group(0))
+        last = m.end()
+    seg, n = _replace_between(INLINE_CODE_RE, text[last:], old, new)
+    total += n
+    out.append(seg)
+    return "".join(out), total
+
+
+def _nfc(s: str) -> str:
+    """Canonical (NFC) form of a string, for link/stem/alias comparison only.
+
+    Filenames and note content can disagree on Unicode composition: a decomposed
+    filename ("Gru" + U+0308 + "ndung.md") and a composed wikilink ("[[Grundung]]"
+    with U+00FC) are the same title to a human and to the filesystem, but not to a
+    plain string compare. Normalizing both sides at the comparison boundary keeps
+    accented titles from being reported as wanted notes or orphans. NFC (not NFKC):
+    only canonical equivalence, never compatibility folding.
+    """
+    return unicodedata.normalize("NFC", s)
+
+
 def _normalize_dashes(s: str) -> str:
     """Convert em-dash (U+2014) and en-dash (U+2013) to a regular hyphen.
 
@@ -222,46 +619,58 @@ def _normalize_dashes(s: str) -> str:
     note with a regular hyphen (`[[2026-05-22 - Learnings Review]]`) should
     still resolve. Normalize both sides before comparison.
     """
-    return s.replace("\u2014", "-").replace("\u2013", "-")
+    return s.replace(_EM_DASH, "-").replace(_EN_DASH, "-")
 
 
-def _is_excluded(rel: str, patterns) -> bool:
-    """True if the vault-relative path matches any glob in ``patterns``.
-
-    Matches against both the full relative path and the bare filename so a
-    pattern like ``log.md`` catches the file wherever it lives, while a path
-    pattern like ``Reviews/Saúde do Vault*.md`` scopes to that folder.
-    """
-    name = Path(rel).name
-    return any(fnmatch(rel, pat) or fnmatch(name, pat) for pat in patterns)
-
-
-def check_broken_links(notes: dict, vault: Path, exclude_patterns=()) -> list:
-    all_stems = {note["stem"].lower(): rel for rel, note in notes.items()}
+def check_wanted_notes(notes: dict, vault: Path, excludes=None) -> list:
+    """Find links whose target note does not exist yet. These are NOT errors -
+    in a wiki-style vault you link a thing the moment you mention it, long before
+    (or instead of) writing its note. They are a demand-ranked wishlist of notes
+    worth writing, so they are reported as info, not warnings. Named after
+    MediaWiki's "Wanted pages"."""
+    all_stems = {_nfc(note["stem"]).lower(): rel for rel, note in notes.items()}
+    # Full-file index so links to non-markdown assets and links written with an
+    # explicit extension resolve instead of being flagged broken.
+    all_files = index_vault_files(vault, excludes)
     # also index stems with em-dashes normalized to regular hyphens so a
     # wikilink written with `-` still matches a filename written with `-`
     all_stems_dash_norm = {
-        _normalize_dashes(note["stem"]).lower(): rel for rel, note in notes.items()
+        _normalize_dashes(_nfc(note["stem"])).lower(): rel
+        for rel, note in notes.items()
     }
     # build alias → rel lookup so [[Full Name]] resolves if the note has that alias
     all_aliases: dict[str, str] = {}
     for rel, note in notes.items():
         for alias in note["aliases"]:
-            all_aliases[alias.lower()] = rel
+            all_aliases[_nfc(alias).lower()] = rel
 
-    # Operating manuals, the activity log, and prior health reports contain
-    # wikilinks that are syntax demos or content listings (every link they audit
-    # is echoed verbatim), not real references. Skip them so they don't generate
-    # dozens of false positives per scan. Defaults live in
-    # DEFAULT_LINK_SCAN_EXCLUDES; callers can extend via --exclude.
-    patterns = tuple(exclude_patterns)
+    # Some notes echo links without owning them: operating manuals show example
+    # wikilinks as syntax demonstrations, and activity logs / prior health
+    # reports quote every audited link verbatim - scanning them re-reports each
+    # finding once per echo. Defaults (_CLAUDE.md, log.md, Vault Health*) live
+    # on VaultExcludes; users extend via .vault-config.json "exclude-link-scan".
+    excludes = excludes or _NO_EXCLUDES
 
     issues = []
     for rel, note in notes.items():
-        if _is_excluded(rel, patterns):
+        if excludes.skip_link_scan(Path(rel).as_posix()):
             continue
-        for link in note["links"]:
-            link_stem = Path(link).stem.lower() if "/" in link else link.lower()
+        # Re-extract links from code-stripped content so example wikilinks inside
+        # code fences / inline code are not counted (issue #82).
+        real_links = [
+            link.strip().rstrip("\\")
+            for link in LINK_RE.findall(_strip_code(note["content"]))
+        ]
+        for link in real_links:
+            # Wikilink targets carry no extension; Path.stem treats everything after
+            # the last dot as a suffix and truncates titles like "release v2.4 notes"
+            # -> "release v2", so path-form links to dotted titles never resolve
+            # (issue #93). Take the last path component verbatim, stripping only a
+            # literal .md if present.
+            link_name = link.rsplit("/", 1)[-1]
+            if link_name.lower().endswith(".md"):
+                link_name = link_name[:-3]
+            link_stem = _nfc(link_name).lower()
             link_norm = link_stem.replace("-", " ").replace("_", " ")
             link_dash_norm = _normalize_dashes(link_stem)
             resolved = (
@@ -270,14 +679,22 @@ def check_broken_links(notes: dict, vault: Path, exclude_patterns=()) -> list:
                 or link_stem in all_aliases
                 or link_norm in all_aliases
                 or link_dash_norm in all_stems_dash_norm
+                or _nfc(link).lower() in all_files
+                or f"{_nfc(link).lower()}.md" in all_files
             )
             if not resolved:
                 potential_folder = vault / link
                 if not potential_folder.is_dir():
                     issues.append({
-                        "type": "broken_link",
-                        "severity": "warning",
-                        "message": f"Broken link [[{link}]] in {rel}",
+                        "type": "wanted_note",
+                        "severity": "info",
+                        # A '[' inside the captured name means the real filename
+                        # contains brackets and the regex capture stopped early -
+                        # never present a possibly-mangled name as authoritative.
+                        "message": f"[[{link}]] - wanted by {rel}" + (
+                            " (name contains brackets; capture may be truncated)"
+                            if "[" in link else ""
+                        ),
                         "files": [rel],
                     })
     return issues
@@ -301,19 +718,23 @@ def check_template_leftovers(notes: dict) -> list:
     return issues
 
 
-def run_health_check(vault: Path, link_scan_excludes=DEFAULT_LINK_SCAN_EXCLUDES) -> dict:
-    print(f"🔍 Scanning vault: {vault}\n")
-    notes = load_vault(vault)
-    print(f"   Found {len(notes)} notes\n")
+def run_health_check(vault: Path) -> dict:
+    # Progress goes to stderr so `--json` stdout is clean and machine-parseable.
+    print(f"🔍 Scanning vault: {vault}\n", file=sys.stderr)
+    excludes = load_vault_config(vault)
+    notes = load_vault(vault, excludes)
+    print(f"   Found {len(notes)} notes\n", file=sys.stderr)
 
     checks = [
         ("Duplicates", check_duplicates(notes)),
         ("Orphans", check_orphans(notes)),
         ("Stale tasks", check_stale_tasks(notes)),
+        ("Code-fence-wrapped notes", check_code_fence_wrapped(notes)),
         ("Missing frontmatter", check_missing_frontmatter(notes)),
-        ("Empty folders", check_empty_folders(vault)),
-        ("Broken links", check_broken_links(notes, vault, link_scan_excludes)),
+        ("Empty folders", check_empty_folders(vault, excludes)),
+        ("Wanted notes", check_wanted_notes(notes, vault, excludes)),
         ("Template leftovers", check_template_leftovers(notes)),
+        ("Semantic index coverage", check_semantic_index(vault, notes)),
     ]
 
     all_issues = []
@@ -370,23 +791,16 @@ def print_report(result: dict):
 
 
 def main():
+    # Windows consoles often default to a legacy codepage (cp1252) that cannot
+    # encode the report's emoji icons; degrade to replacement characters instead
+    # of crashing. The platform encoding is kept so captured output stays decodable.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
+
     parser = argparse.ArgumentParser(description="Obsidian vault health checker")
     parser.add_argument("--path", required=True, help="Path to the vault")
     parser.add_argument("--json", action="store_true", help="Output as JSON (for Claude)")
-    parser.add_argument(
-        "--exclude",
-        action="append",
-        metavar="GLOB",
-        help="Glob (vs vault-relative path or filename) to skip in the broken-link "
-        "scan. Repeatable. Extends the defaults: "
-        f"{', '.join(DEFAULT_LINK_SCAN_EXCLUDES)}. "
-        "Use --no-default-excludes to drop those.",
-    )
-    parser.add_argument(
-        "--no-default-excludes",
-        action="store_true",
-        help="Do not apply the default meta-file excludes from the broken-link scan.",
-    )
     args = parser.parse_args()
 
     vault = Path(args.path).expanduser().resolve()
@@ -394,14 +808,23 @@ def main():
         print(f"❌ Vault not found: {vault}")
         return 1
 
-    excludes = () if args.no_default_excludes else DEFAULT_LINK_SCAN_EXCLUDES
-    excludes = tuple(excludes) + tuple(args.exclude or ())
-    result = run_health_check(vault, link_scan_excludes=excludes)
+    result = run_health_check(vault)
 
     if args.json:
         print(json.dumps(result, indent=2, default=str))
     else:
         print_report(result)
+        # Only on a clean run, and only ever once. A tool asking for a favour
+        # right after reporting problems it found in your vault has the tone
+        # exactly backwards.
+        if result["total_issues"] == 0 and result["total_notes"] > 0:
+            try:
+                from star_prompt import maybe_ask
+                maybe_ask(
+                    f"Clean bill of health across {result['total_notes']} notes."
+                )
+            except Exception:
+                pass  # a growth prompt must never be able to fail a health check
 
 
 if __name__ == "__main__":

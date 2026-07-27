@@ -2,20 +2,23 @@
 description: Extract metadata, transcript, and summary from a podcast episode, saved as an AI-first note in the vault
 category: research
 triggers_en: ["summarize this podcast", "podcast episode summary", "extract podcast", "what's in this episode"]
+triggers_es: ["resume este pódcast", "resumen del episodio", "extrae este pódcast", "qué dice este episodio"]
+triggers_pt: ["resuma este podcast", "resumo de episódio de podcast", "extraia este podcast", "o que há neste episódio"]
 ---
 
 Use the obsidian-second-brain skill. Execute `/podcast [url]`:
 
 1. Resolve the podcast URL from the user's argument. Accept any of:
    - Apple Podcasts episode URL (`https://podcasts.apple.com/.../id<show>?i=<episode>`)
+   - Spotify episode URL (`https://open.spotify.com/episode/<id>`) - Spotify's own audio is DRM-locked, so the script bridges it to the show's public RSS feed: it reads the episode title from Spotify's key-free oEmbed endpoint, finds that episode in Apple's index to get the feed URL, then pulls the episode from the open feed by title. Works for any show that also publishes an open feed (most do); fails clearly for Spotify-exclusive shows with no public RSS.
    - Direct RSS feed URL (uses the latest episode unless `?episode=<guid>` selector is appended)
    - Direct RSS feed URL with `?episode=<guid-fragment-or-link-fragment>` selector
 
-   If no input given, ask: "Which podcast episode? Paste the Apple Podcasts link or RSS feed URL." Spotify URLs are not supported (DRM blocks audio + transcript access). Surface this clearly if pasted.
+   If no input given, ask: "Which podcast episode? Paste the Apple Podcasts, Spotify, or RSS feed URL."
 
-2. Run the Python command from the repo root (`~/Projects/personal/obsidian-second-brain/`):
+2. Run the script from the skill root (its absolute path was given at session start as **Skill root**; substitute it for `SKILL_ROOT`):
    ```bash
-   uv run -m scripts.research.podcast_extract "<url>"
+   uv run --directory "SKILL_ROOT" -m scripts.research.podcast_extract "<url>"
    ```
 
 3. The script:
@@ -30,7 +33,7 @@ Use the obsidian-second-brain skill. Execute `/podcast [url]`:
 
 4. Show the script output verbatim to the user.
 
-5. **Default save behavior: saves automatically.** AI-first note written to `Research/Podcasts/YYYY-MM-DD — <episode-title-slug>.md` (em-dash separator, matches the existing `/youtube` and `/research` filename pattern). Frontmatter includes `show`, `host`, `episode-title`, `episode-url`, `feed-url`, `guid`, `published`, `duration`, `transcript-source` (one of `rss-transcript-tag` / `whisper-api` / `show-notes`), and tags.
+5. **Default save behavior: saves automatically.** AI-first note written to `Research/Podcasts/YYYY-MM-DD - <episode-title-slug>.md` (hyphen separator, matches the existing `/youtube` and `/research` filename pattern). Frontmatter includes `show`, `host`, `episode-title`, `episode-url`, `feed-url`, `guid`, `published`, `duration`, `transcript-source` (one of `rss-transcript-tag` / `whisper-api` / `show-notes`), and tags.
 
 6. Plain English triggers: "summarize this podcast", "what's in this episode", "transcribe this podcast", or just pasting an Apple Podcasts URL with a question about content.
 

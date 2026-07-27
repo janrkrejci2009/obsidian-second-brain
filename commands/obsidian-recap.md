@@ -2,6 +2,8 @@
 description: Summarize a time period from the vault - today, week, or month
 category: vault
 triggers_en: ["recap today", "recap the week", "summarize the week", "month recap"]
+triggers_es: ["resumen de hoy", "resumen de la semana", "resume la semana", "resumen del mes"]
+triggers_pt: ["recapitule hoje", "recapitule a semana", "resuma a semana", "recap do mês"]
 ---
 
 Use the obsidian-second-brain skill. Execute `/obsidian-recap $ARGUMENTS`:
@@ -10,7 +12,7 @@ The argument is the period: `today`, `week`, or `month`. Default to `week` if no
 
 1. Read `_CLAUDE.md` first if it exists in the vault root
 2. Determine the date range from the argument
-3. List all daily notes in the range with `list_files_in_dir("Daily/")`
+3. List all daily notes in the range from the daily folder, resolved per `references/folder-map.md` (wiki-style `wiki/daily/`, Obsidian-style `Daily/`)
 4. Spawn parallel subagents - one per daily note - to read and extract key points from each simultaneously
 5. Also spawn parallel agents to read dev logs and completed kanban tasks from the same period
 6. Synthesize all agent results: what was worked on, decisions made, people interacted with, tasks completed, ideas captured

@@ -2,6 +2,8 @@
 description: Generate a structured weekly or monthly review note from vault history
 category: thinking
 triggers_en: ["weekly review", "monthly review", "review my week", "review my month"]
+triggers_es: ["revisión semanal", "revisión mensual", "revisa mi semana", "revisa mi mes"]
+triggers_pt: ["revisão semanal", "revisão mensal", "revise minha semana", "revise meu mês"]
 ---
 
 Use the obsidian-second-brain skill. Execute `/obsidian-review $ARGUMENTS`:
@@ -13,14 +15,14 @@ The optional argument specifies `weekly` or `monthly`. Ask if not clear from con
 3. Read daily notes and dev logs for the period
 4. Read active projects and check for status changes
 5. Read completed tasks from kanban boards
-6. Draft a review note using `Templates/Review.md` if it exists, otherwise use:
+6. Draft a review note using `Templates/Review.md` (or lowercase `templates/Review.md`) if one exists, otherwise use:
    - What I accomplished
    - Key decisions made
    - People I worked with
    - What I learned
    - What to carry forward
    - **Suggested questions for future-Claude** - 4 to 5 questions this period's vault content can answer that the user has not asked yet. Each question must cite at least one specific note (with `[[wikilink]]`). Prefer questions that surface contradictions across notes, connect entities that co-appeared without being explicitly linked, or name an unstated next action. Skip generic prompts the review section already covers.
-7. Save to `Reviews/YYYY-MM-DD — Weekly Review.md` (or Monthly)
+7. Save to the reviews folder resolved per `references/folder-map.md` (read the vault's `_CLAUDE.md` Folder Map first; wiki-style `wiki/reviews/`, Obsidian-style `Reviews/`), named `YYYY-MM-DD - Weekly Review.md` (or Monthly)
 8. Link from the last daily note of the period
 
 ---

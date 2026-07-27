@@ -2,6 +2,8 @@
 description: Find and resolve contradictions in the vault - the vault maintains its own truth
 category: thinking
 triggers_en: ["find contradictions", "reconcile vault", "fix conflicts", "vault contradictions"]
+triggers_es: ["busca contradicciones", "concilia el vault", "resuelve los conflictos", "contradicciones en el vault"]
+triggers_pt: ["encontre contradições", "reconcilie o vault", "corrija conflitos", "contradições do vault"]
 ---
 
 Use the obsidian-second-brain skill. Execute `/obsidian-reconcile $ARGUMENTS`:
@@ -12,9 +14,9 @@ The optional argument is a topic or entity to focus on. If not provided, scan th
 2. Read `index.md` to understand the full vault landscape
 
 3. Spawn parallel subagents to find contradictions:
-   - **Claims agent**: scan `wiki/concepts/` and `wiki/projects/` for factual claims - find pairs that contradict each other
-   - **Entity agent**: scan `wiki/entities/` for outdated roles, companies, or descriptions that conflict with newer sources
-   - **Decisions agent**: scan `wiki/decisions/` and project Key Decisions for reversed or superseded decisions that were never updated
+   - **Claims agent**: scan the concepts and projects folders (resolved per `references/folder-map.md`) for factual claims - find pairs that contradict each other
+   - **Entity agent**: scan the entities folder (resolved per `references/folder-map.md`) for outdated roles, companies, or descriptions that conflict with newer sources
+   - **Decisions agent**: scan the decisions folder (resolved per `references/folder-map.md`) and project Key Decisions for reversed or superseded decisions that were never updated
    - **Source freshness agent**: compare `raw/` source dates against `wiki/` page dates - flag wiki pages that reference old sources when newer ones exist on the same topic
 
 4. For each contradiction found, evaluate:
@@ -24,7 +26,7 @@ The optional argument is a topic or entity to focus on. If not provided, scan th
 
 5. Resolve each contradiction:
    - **Clear winner**: rewrite the outdated page with current info. Add a `## History` section noting what changed and why: "Previously stated X (source: raw/articles/old-article.md, 2025-11-01). Updated to Y based on newer evidence (source: raw/articles/new-article.md, 2026-03-15)."
-   - **Genuinely ambiguous**: create `wiki/decisions/Conflict — Topic.md` documenting both sides, the evidence for each, and mark as `status: open` for the user to decide
+   - **Genuinely ambiguous**: create `Conflict - Topic.md` in the decisions folder (resolved per `references/folder-map.md`; `type: conflict`, schema in `references/ai-first-rules.md`) documenting both sides, the evidence for each, and mark as `status: open` for the user to decide
    - **Evolution**: update the entity/concept page to reflect the current state and add the historical context
 
 6. After all resolutions:

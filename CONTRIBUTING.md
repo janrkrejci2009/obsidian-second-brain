@@ -4,6 +4,10 @@ Thanks for your interest in contributing! This skill exists because the people w
 
 This guide explains **how to contribute** so your work lands fast.
 
+**Looking for somewhere to start?** The [good first issues](https://github.com/eugeniughelbur/obsidian-second-brain/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) each name the exact files and lines, flag what to watch out for, and say how big the change is, so the "where do I even stand" part is already done. Comment on one to claim it. Adding trigger phrases in a language you speak needs no Python.
+
+**Use one of the non-Claude builds?** Seven platform builds are compiled from one source tree, and one person maintains all seven while being able to test two. [adapters/OWNERS.md](adapters/OWNERS.md) lists every build and how to claim one. The qualification is using the platform; your handle then ships inside that build.
+
 ---
 
 ## Before you start
@@ -60,7 +64,7 @@ Now restart Claude Code and your slash commands will use the local checkout.
 
 ### ✨ New slash commands
 
-This is the most common contribution. The skill currently has 31 commands across 4 layers; adding a 32nd is a clear path.
+This is the most common contribution. The skill currently has 46 commands across 4 layers; adding a 47th is a clear path.
 
 **Required steps:**
 1. **Open a feature request issue first.** Get a thumbs-up before building. Saves you wasted work if the command isn't a fit.
@@ -131,7 +135,7 @@ triggers_es: ["guarda esto", "guarda la conversación", "guarda al vault"]
 
 When you rebuild (`bash scripts/build.sh`), the new language automatically appears as its own section under `## Trigger phrases` in the dispatcher files (`AGENTS.md`, `GEMINI.md`). No adapter code changes needed.
 
-Translation PRs welcome for any of the 31 commands. Send one language at a time, full coverage. Open `commands/*.md`, add your `triggers_<code>:` line under the existing `triggers_en:`, and open a PR titled `Add <Language> trigger phrases`.
+Translation PRs welcome for any of the 46 commands. Send one language at a time, full coverage. Open `commands/*.md`, add your `triggers_<code>:` line under the existing `triggers_en:`, and open a PR titled `Add <Language> trigger phrases`.
 
 ### 🐧 Cross-platform support
 

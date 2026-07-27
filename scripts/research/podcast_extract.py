@@ -9,12 +9,14 @@ Transcript priority:
   3. Show-notes-only fallback (no audio fetch)
 
 Then summarizes via Grok and saves an AI-first note to Research/Podcasts/.
-Spotify URLs are not supported in v1 (DRM blocks audio access).
+Spotify episode URLs are supported via the public-RSS bridge (lib/podcast.py):
+the episode is resolved to its open feed and pulled from there, never from Spotify.
 """
 
 import os
 import sys
 from datetime import datetime
+
 from .lib import grok, podcast, vault
 
 SUMMARIZE_PROMPT = """You are summarizing a podcast episode for a knowledge vault. The note will be read by future-Claude (an AI), not by a human. Optimize for AI retrieval.
@@ -124,11 +126,10 @@ def main(argv: list[str]) -> int:
     user_input = argv[1].strip()
     if "spotify.com" in user_input.lower():
         print(
-            "❌ Spotify URLs aren't supported (DRM blocks audio + transcript access).\n"
-            "   Try the Apple Podcasts URL or the show's RSS feed instead.",
+            "[/podcast] Spotify link detected - bridging to the show's public RSS feed "
+            "(Spotify audio is DRM-locked; the same episode is read from the open feed).",
             file=sys.stderr,
         )
-        return 2
 
     print(f"[/podcast] Resolving {user_input}...", file=sys.stderr)
     try:

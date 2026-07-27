@@ -2,21 +2,23 @@
 description: Vault-first source-grounded research via Gemini File Search. One command, no browser. The grounded parallel to /research-deep (which is open-web via Perplexity).
 category: research
 triggers_en: ["notebooklm", "research grounded", "ground research in vault", "ask my notebook", "source-grounded research"]
+triggers_es: ["notebooklm", "investigación fundamentada en mis notas", "basa esto en mi vault", "pregúntale a mis notas", "investigación con fuentes propias"]
+triggers_pt: ["notebooklm", "pesquisa ancorada", "ancore a pesquisa no vault", "pergunte ao meu notebook", "pesquisa ancorada em fontes"]
 ---
 
 Use the obsidian-second-brain skill. Execute `/notebooklm [topic]`:
 
 1. Resolve the topic from the user's argument. If no topic, ask: "What topic for source-grounded research?"
 
-2. Run the Python command from the repo root (`~/Projects/personal/obsidian-second-brain/`):
+2. Run the script from the skill root (its absolute path was given at session start as **Skill root**; substitute it for `SKILL_ROOT`):
    ```bash
-   uv run -m scripts.research.notebooklm --topic "<topic>"
+   uv run --directory "SKILL_ROOT" -m scripts.research.notebooklm --topic "<topic>"
    ```
 
 3. The script does the whole flow end-to-end:
    - Scans the vault for the top 12 relevant notes (same shape as `/research-deep` Phase 1).
    - Uploads them to a fresh Gemini File Search store.
-   - Asks Gemini (default `gemini-2.5-pro`, override via `NOTEBOOKLM_MODEL` env) for a synthesis grounded against those sources.
+   - Asks Gemini (default `gemini-2.5-flash`, override via `NOTEBOOKLM_MODEL` env) for a synthesis grounded against those sources.
    - Writes the AI-first synthesis to `Research/NotebookLM/YYYY-MM-DD - <slug>.md`.
    - Deletes the File Search store so nothing is left behind.
    - Emits a `<<<NOTEBOOKLM_PROPAGATION_PAYLOAD>>>` JSON block.
@@ -37,7 +39,7 @@ Use the obsidian-second-brain skill. Execute `/notebooklm [topic]`:
    - `/notebooklm` (Gemini File Search): when you want answers GROUNDED IN your own vault. Cost: ~$0.01-0.05.
    - Run both for high-value topics. The web view and the grounded view rarely contradict, and the contradictions are where the insight is.
 
-8. Configuration: requires `GEMINI_API_KEY` in `~/.config/obsidian-second-brain/.env`. Get one free at https://aistudio.google.com/apikey. Optional `NOTEBOOKLM_MODEL` override (default `gemini-2.5-pro`).
+8. Configuration: requires `GEMINI_API_KEY` in `~/.config/obsidian-second-brain/.env`. Get one free at https://aistudio.google.com/apikey. Optional `NOTEBOOKLM_MODEL` override (default `gemini-2.5-flash`).
 
 ---
 

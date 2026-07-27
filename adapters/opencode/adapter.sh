@@ -39,11 +39,11 @@ agent) should follow when the user's request matches its trigger phrase.
 2. When the user's request matches a trigger in the tables below, read the
    matching file under `.opencode/commands/<name>.md` and follow its
    instructions step by step.
-3. Treat the AI-first vault rule (`references/ai-first-rules.md`) as
-   non-negotiable for every note you write: `## For future Claude` preamble,
-   rich frontmatter (`type`, `date`, `tags`, `ai-first: true`), `[[wikilinks]]`
-   for every person/project/concept, recency markers per external claim,
-   sources verbatim, confidence levels where applicable.
+EOF
+
+    emit_ai_first_rule ".opencode/references/ai-first-rules.md"
+
+    cat <<'EOF'
 
 ## Command routing tables (grouped by category)
 EOF
@@ -71,31 +71,26 @@ _opencode_translate_commands() {
     out="$dst/$(basename "$f")"
     cp "$f" "$out"
     rewrite_tool_neutral "$out"
+    rewrite_skill_root "$out" ".${OPENCODE_DIR}"
     rewrite_platform_paths "$out" "$OPENCODE_DIR"
   done
 }
 
-_opencode_copy_references() {
-  local src="$1" dst="$2"
-  [[ -d "$src" ]] || return 0
-  mkdir -p "$dst"
-  cp -R "$src/." "$dst/"
-  find "$dst" -type f -name '*.md' -print0 | while IFS= read -r -d '' f; do
-    rewrite_platform_paths "$f" "$OPENCODE_DIR"
-  done
-}
+_opencode_copy_references() { copy_references_rewritten "$1" "$2" "$OPENCODE_DIR"; }  # see adapters/lib.sh
 
-_opencode_copy_scripts() {
-  local src="$1" dst="$2"
-  [[ -d "$src" ]] || return 0
-  mkdir -p "$dst"
-  cp -R "$src/." "$dst/"
-}
+_opencode_copy_scripts() { copy_scripts_with_project "$1" "$2"; }  # see adapters/lib.sh
 
 _opencode_emit_install_hint() {
   local dst="$1"
   cat > "$dst/INSTALL.md" <<'EOF'
 # Install on OpenCode
+
+> **Deprecated.** This per-platform build is superseded by the unified Agent
+> Skills build (`bash scripts/build.sh --platform agent-skills`), which emits
+> one spec-compliant `.agents/skills/` tree that OpenCode, Codex CLI, and
+> Google Antigravity all read, and installs via `npx skills`. This opencode
+> build still works but will be removed in a future release. See
+> `dist/agent-skills/INSTALL.md`.
 
 ```bash
 # After running `bash scripts/build.sh --platform opencode`:
@@ -107,5 +102,26 @@ Then in your vault:
 - `AGENTS.md` is the operating manual OpenCode reads at session start.
 - `.opencode/commands/*.md` are the command bodies the AI follows.
 - `.opencode/scripts/` holds the Python helpers.
+
+## Run on Hermes / open models
+
+OpenCode is model-agnostic, so these commands run on any model you point it at,
+including open models like Nous Research Hermes. No build changes needed - set
+the model on OpenCode's side. Authenticate OpenRouter (`/connect`, or
+`export OPENROUTER_API_KEY=...`), then in `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "openrouter/nousresearch/hermes-4-70b",
+  "provider": { "openrouter": { "models": { "nousresearch/hermes-4-70b": {} } } }
+}
+```
+
+Use `nousresearch/hermes-4-405b` for the synthesis-heavy commands, or
+`nousresearch/hermes-3-llama-3.1-405b:free` for a zero-cost trial. For full
+privacy, run a smaller Hermes locally via Ollama / LM Studio. Core commands
+(save, daily, capture, find, task, free-mode research) hold up well on open
+models; the deep-synthesis commands prefer a stronger instruction-follower.
 EOF
 }
