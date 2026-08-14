@@ -135,7 +135,7 @@ Perplexity Sonar Pro pulls a deep dossier with citations: summary, key facts (ev
 Scans your vault for what you already know. Identifies gaps. Spawns 3-5 targeted searches via Perplexity (web) and Grok (X discourse). Synthesizes a delta report: what's new, what's confirmed, contradictions to resolve, recommended vault updates. Vault baseline doesn't get re-researched. Only gaps get filled.
 
 **You hit a great YouTube video:** `/youtube https://youtu.be/...`
-Free transcript via youtube-transcript-api. Optional metadata + top comments via YouTube Data API v3. Gemini (free tier, Grok fallback) summarizes into TL;DR, Key Points, Notable Quotes (verbatim), Themes, Comment Sentiment, and Worth Following Up On. Saved as an AI-first note in your vault. Add `--visual` to also *watch* it: scene-change frame extraction (ffmpeg) that Claude reads with its own vision to capture on-screen text, code, diagrams, and demos the transcript misses.
+Free transcript via youtube-transcript-api. Optional metadata + top comments via YouTube Data API v3. Grok summarizes into TL;DR, Key Points, Notable Quotes (verbatim), Themes, Comment Sentiment, and Worth Following Up On. Saved as an AI-first note in your vault. Add `--visual` to also *watch* it: scene-change frame extraction (ffmpeg) that Claude reads with its own vision to capture on-screen text, code, diagrams, and demos the transcript misses.
 
 **You never open Obsidian.** Everything happens through Claude.
 
@@ -489,7 +489,7 @@ Pair with `/research-deep` on the same topic. Open-web view + vault-grounded vie
 
 **`/youtube https://youtu.be/...` (add `--visual` to watch, not just read)**
 
-Free transcript via youtube-transcript-api + optional metadata + comments via YouTube Data API v3 (free tier). Gemini (gemini-2.5-flash, free tier) summarizes into TL;DR, Key Points, Notable Quotes (verbatim), Themes, Comment Sentiment, and Worth Following Up On - Grok is the automatic fallback (~$0.04) when no Gemini key is set. Frontmatter includes view count, channel, published date, like count for Dataview queries.
+Free transcript via youtube-transcript-api + optional metadata + comments via YouTube Data API v3 (free tier). Grok (~$0.04) summarizes into TL;DR, Key Points, Notable Quotes (verbatim), Themes, Comment Sentiment, and Worth Following Up On. Frontmatter includes view count, channel, published date, like count for Dataview queries.
 
 `--visual` downloads the video (yt-dlp, <=720p) and extracts one frame per scene change (ffmpeg scene detection, not a fixed timer), so on-screen text, code, diagrams, slides, UI, and b-roll are captured. Claude reads the frames with its own vision (no extra API call) and writes a timestamp-keyed `## Visual notes` section; hero frames are embedded in the note. Requires `yt-dlp` + `ffmpeg` on PATH; skips gracefully if missing. `--max-frames N` caps frames read (default 24). Pipeline ported from [claude-watch](https://github.com/taoufik123-collab/claude-watch) / [claude-video](https://github.com/bradautomates/claude-video) (MIT).
 
@@ -785,7 +785,7 @@ Keys you need:
 | `PERPLEXITY_API_KEY` | [perplexity.ai/settings/api](https://perplexity.ai/settings/api) | `/research`, `/research-deep` | Pay-per-use, ~$0.02-$0.50/call |
 | `TAVILY_API_KEY` | [app.tavily.com](https://app.tavily.com) | `/research`, `/research-deep` web source (optional, joins the key-less track + adds page extraction; `TAVILY_SEARCH_DEPTH`/`TAVILY_MAX_RESULTS` tune it) | Free "Researcher" tier: 1,000 credits/month, no card. PAYGO ~$0.008/credit |
 | `BRAVE_API_KEY` | [api-dashboard.search.brave.com](https://api-dashboard.search.brave.com) | `/research`, `/research-deep` web source (optional, joins the key-less track) | $5/1,000 requests, $5 free credits monthly (as of 2026-07) |
-| `GEMINI_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | `/notebooklm`, `/youtube` summary (Grok fallback) (vault-grounded synthesis via Gemini File Search) | Free tier covers it. Paid: ~$0.004/call (Flash), ~$0.06/call (Pro). |
+| `GEMINI_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | `/notebooklm` (vault-grounded synthesis via Gemini File Search) | Free tier covers it. Paid: ~$0.004/call (Flash), ~$0.06/call (Pro). |
 | `YOUTUBE_API_KEY` | [console.cloud.google.com](https://console.cloud.google.com) | `/youtube` metadata + comments (optional, transcripts free without) | Free tier 10k units/day |
 | `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com/api-keys) | `/podcast` Whisper transcription (optional, falls back to show-notes if unset) | ~$0.006/min |
 
@@ -830,7 +830,7 @@ Yes. The skill is model-agnostic - the OpenCode, Codex, and Gemini builds are pl
 Yes. The skill writes to your vault as standard markdown files. Obsidian Sync, iCloud, Syncthing, and Git-based sync all work without modification.
 
 ### Do I need API keys to use this?
-Mostly no. The vault commands (`/obsidian-save`, `/obsidian-daily`, etc.) need no API keys. `/research` and `/research-deep` are also key-free now - with no Perplexity key they automatically fall back to free, key-less sources (Wikipedia, HackerNews, arXiv, Reddit, and more) and Claude synthesizes the dossier. The remaining research commands (`/x-read`, `/x-pulse`, `/notebooklm`, `/youtube`, `/podcast`) need their respective keys (xAI Grok, Perplexity, Google Gemini, optionally YouTube Data API v3 / OpenAI Whisper) and exit with a clear setup message when one is missing. The calendar command (`/obsidian-calendar`, all four modes) needs the Google Calendar MCP connector rather than an API key.
+Mostly no. The vault commands (`/obsidian-save`, `/obsidian-daily`, etc.) need no API keys. `/research` and `/research-deep` are also key-free now - with no Perplexity key they automatically fall back to free, key-less sources (Wikipedia, HackerNews, arXiv, Reddit, and more) and Claude synthesizes the dossier. The remaining research commands need their respective keys and exit with a clear setup message when one is missing: `/x-read`, `/x-pulse`, and `/youtube` need xAI Grok (`/youtube` optionally adds YouTube Data API v3 for metadata + comments); `/notebooklm` needs Google Gemini; `/podcast` optionally uses OpenAI Whisper. The calendar command (`/obsidian-calendar`, all four modes) needs the Google Calendar MCP connector rather than an API key.
 
 ### How is this different from Notion AI or Mem?
 Notion AI and Mem are closed-source SaaS products that own your data. This skill stores everything as plain markdown in your local Obsidian vault, with no vendor lock-in. The AI is on top of your data, not behind it. You can switch tools or stop using the skill at any point and still have your full vault.
@@ -854,7 +854,7 @@ The maintenance layer, given a name. Its one rule: every stored fact must be tim
 `/research` runs a single Perplexity query and returns a dossier with citations. `/research-deep` is vault-first: it scans your existing notes, identifies what you already know about the topic, spawns 3-5 targeted follow-up searches to fill only the gaps, and produces a delta report (what's new, what's confirmed, contradictions to resolve, recommended vault updates). Vault-first means you stop re-researching what's already in your notes.
 
 ### What do the research commands cost?
-Approximate per-call costs as of 2026-04: `/x-read` ~$0.05, `/x-pulse` ~$0.13, `/research` ~$0.04, `/research-deep` ~$0.40-$0.80, `/youtube` ~$0.04, `/podcast` ~$0.04 Grok call (plus ~$0.006/min if Whisper is used; free if RSS provides a `<podcast:transcript>` tag or you accept the show-notes fallback). Costs for paid calls (Grok, Perplexity, Gemini) are logged to `~/.research-toolkit/usage.log` for visibility. No hard caps. You're trusted to monitor your own spend.
+Approximate per-call costs as of 2026-04: `/x-read` ~$0.05, `/x-pulse` ~$0.13, `/research` ~$0.04, `/research-deep` ~$0.40-$0.80, `/youtube` ~$0.04, `/podcast` ~$0.04 Grok call (plus ~$0.006/min if Whisper is used; free if RSS provides a `<podcast:transcript>` tag or you accept the show-notes fallback). Costs for paid calls (Grok, Perplexity) are logged to `~/.research-toolkit/usage.log` for visibility. No hard caps. You're trusted to monitor your own spend.
 
 ### Can I use this on Windows or Linux?
 The core vault commands work anywhere Claude Code runs. `install.sh` supports Linux, macOS, and Windows (MSYS2/Git Bash): on Linux/macOS slash commands are symlinked so `git pull` keeps them current; on Windows they are copied and `update.sh` refreshes them. The research toolkit auto-open step uses `open` on macOS, `xdg-open` on Linux, and `notepad` on Windows.

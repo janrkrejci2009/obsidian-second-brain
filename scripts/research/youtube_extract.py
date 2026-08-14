@@ -18,7 +18,6 @@ Default behavior: print to chat AND save AI-first note to Research/YouTube/.
 
 import argparse
 import json
-import os
 import shutil
 import sys
 import tempfile
@@ -32,6 +31,8 @@ from .lib import grok, vault, video_frames, youtube
 DEFAULT_VISUAL_MAX_FRAMES = 24
 
 SUMMARIZE_PROMPT = """You are summarizing a YouTube video for a knowledge vault. The note will be read by future-Claude (an AI), not by a human. Optimize for AI retrieval.
+
+LANGUAGE: Write all prose content in Brazilian Portuguese (pt-BR) - correct grammar, natural phrasing, standard orthography (post-1990 Acordo Ortográfico). This applies regardless of the transcript's source language (English, Spanish, etc.): translate and paraphrase into pt-BR, don't leave sections in the original language. Do not produce a stiff, literal/machine-translated Portuguese - write as a fluent native speaker would. Exception: verbatim quotes in "Notable Quotes" stay in the original language, followed by a pt-BR translation in parentheses. Section headers below stay in English (matches the rest of the vault's note templates); only the bracketed content under each header is pt-BR prose.
 
 VIDEO TITLE: {title}
 CHANNEL: {channel}
@@ -47,26 +48,27 @@ TRANSCRIPT (first {tx_chars} chars):
 Produce EXACTLY this structure (markdown):
 
 ## TL;DR
-[2-3 sentences capturing the core thesis or value of the video.]
+[2-3 frases em português (pt-BR) capturando a tese central ou o valor do vídeo.]
 
 ## Key Points
-- [Specific concrete claim, idea, or method from the video]
+- [Afirmação, ideia ou método concreto do vídeo, em português (pt-BR)]
 - [...continue for 5-12 bullets covering the actual substance, not filler]
 
 ## Notable Quotes
-- "[Verbatim quote]" - [if you can locate it; max 5 quotes]
+- "[Verbatim quote in the original language]" (tradução: "[pt-BR translation]") - [locate with timestamp/context if you can; max 5 quotes]
 
 ## Themes & Topics
-[2-3 sentences naming the broader themes / domains this video touches]
+[2-3 frases em português (pt-BR) nomeando os temas/domínios mais amplos que o vídeo toca]
 
 ## Comment Sentiment
-[If comments were provided: 1-2 sentence summary of audience reaction. Note dominant praise, criticism, or question patterns. If no comments provided, write "No comments available."]
+[If comments were provided: 1-2 frases em português (pt-BR) resumindo a reação da audiência. Note dominant praise, criticism, or question patterns. If no comments provided, write "Nenhum comentário disponível."]
 
 ## Worth Following Up On
-- [Specific things mentioned that would be worth a deeper /research call later]
+- [Pontos específicos mencionados que valeriam uma chamada /research mais profunda depois, em português (pt-BR)]
 
 Rules:
-- Be specific. "Talks about AI" is useless to future-Claude. "Argues that LLM context windows over 1M tokens degrade reasoning quality after 200k tokens" is useful.
+- Write in Brazilian Portuguese throughout, per LANGUAGE above (verbatim quotes excepted). Correct grammar, no anglicisms/calques, no machine-translation artifacts.
+- Be specific. "Fala sobre IA" is useless to future-Claude. "Argumenta que janelas de contexto de LLM acima de 1M tokens degradam a qualidade do raciocínio após 200k tokens" is useful.
 - Don't pad. If a section is genuinely thin, write one bullet and move on.
 - Don't add commentary outside this structure.
 """
@@ -186,24 +188,12 @@ def main(argv: list[str]) -> int:
         comments_section=comments_section,
     )
 
-    # Prefer Gemini for the summary when its key is set (generous free tier),
-    # fall back to Grok - transparently, since gemini.call mirrors grok.call's
-    # return shape. No Gemini key = exactly the old Grok-only behavior.
-    result = None
-    if os.environ.get("GEMINI_API_KEY", "").strip():
-        print("[/youtube] Summarizing via Gemini (free tier)...\n", file=sys.stderr)
-        try:
-            from .lib import gemini
-            result = gemini.call(prompt, command="youtube", max_output_tokens=3000)
-        except Exception as e:  # noqa: BLE001 - fall back to Grok on any Gemini failure
-            print(f"[/youtube] Gemini failed ({e}); falling back to Grok...", file=sys.stderr)
-    if result is None:
-        print("[/youtube] Summarizing via Grok...\n", file=sys.stderr)
-        try:
-            result = grok.call(prompt, command="youtube", max_output_tokens=3000)
-        except Exception as e:
-            print(f"\n❌ /youtube summarize failed: {e}", file=sys.stderr)
-            return 1
+    print("[/youtube] Summarizing via Grok...\n", file=sys.stderr)
+    try:
+        result = grok.call(prompt, command="youtube", max_output_tokens=3000)
+    except Exception as e:
+        print(f"\n❌ /youtube summarize failed: {e}", file=sys.stderr)
+        return 1
 
     print(f"# {title}")
     print(f"**Channel:** {channel} · **Published:** {published}")

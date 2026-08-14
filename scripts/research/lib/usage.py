@@ -1,4 +1,4 @@
-"""Soft cost tracking for paid API calls (Grok, Perplexity, Gemini, Tavily).
+"""Soft cost tracking for paid API calls (Grok, Perplexity, Tavily).
 No blocking, just visibility - and fail-soft: a broken ledger must never
 abort the research call it is observing (fork-insights round 2, the
 api-ledger fork's pattern)."""
