@@ -24,15 +24,28 @@ def parse_video_id(url_or_id: str) -> str:
     raise ValueError(f"Could not extract YouTube video ID from: {url_or_id}")
 
 
+TRANSCRIPT_LANGUAGE_PREFERENCE = ("en", "pt", "pt-BR", "es")
+
+
 def get_transcript(video_id: str) -> str | None:
-    """Return concatenated transcript text, or None if unavailable."""
+    """Return concatenated transcript text, or None if unavailable.
+
+    Prefers English, then Portuguese/Spanish; falls back to whatever
+    caption track the video actually has (many videos are pt-only,
+    with no 'en' track) rather than failing outright.
+    """
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
     except ImportError:
         return None
     try:
         api = YouTubeTranscriptApi()
-        fetched = api.fetch(video_id)
+        transcript_list = api.list(video_id)
+        try:
+            transcript = transcript_list.find_transcript(TRANSCRIPT_LANGUAGE_PREFERENCE)
+        except Exception:
+            transcript = next(iter(transcript_list))
+        fetched = transcript.fetch()
         return " ".join(seg.text for seg in fetched.snippets if seg.text).strip()
     except Exception as e:
         print(f"[YouTube transcript unavailable: {type(e).__name__}: {e}]")
