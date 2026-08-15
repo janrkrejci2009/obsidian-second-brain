@@ -5,7 +5,12 @@ Transcript: free, no API key needed (youtube-transcript-api).
 Metadata + comments: free, requires YOUTUBE_API_KEY (Data API v3).
 Without YOUTUBE_API_KEY: transcript-only mode.
 
-Then summarizes via Grok (cheap call, no live_search).
+No LLM API call for the summary. This script only does the mechanical part
+(fetch transcript/metadata/comments, save a skeleton AI-first note) and prints
+the transcript in a TRANSCRIPT-FOR-CLAUDE block; Claude (the agent running this
+command) reads it and writes the ## Summary section itself, per commands/youtube.md,
+then edits it into the note this script already saved. Same shape as the --visual
+frame-reading flow below, just applied to every run now instead of only visual ones.
 
 --visual: also download the video and extract one frame per scene change (ffmpeg
 scene detection, via lib/video_frames.py). Hero frames are saved into the vault
@@ -13,7 +18,9 @@ and the full keyframe set is printed for Claude to read with its own vision and
 write the Visual notes section. Requires yt-dlp + ffmpeg on PATH. Ported idea from
 claude-watch (MIT, github.com/taoufik123-collab/claude-watch).
 
-Default behavior: print to chat AND save AI-first note to Research/YouTube/.
+Default behavior: print to chat AND save an AI-first note (skeleton) to
+Research/YouTube/; Claude fills in ## Summary (and ## Visual notes, if --visual)
+via Edit right after this script returns.
 """
 
 import argparse
@@ -24,54 +31,18 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from .lib import grok, vault, video_frames, youtube
+from .lib import vault, video_frames, youtube
 
 # Frames the visual layer reads by default. Kept modest: each frame is an image
 # Claude reads, so cost scales with count. Override with --max-frames.
 DEFAULT_VISUAL_MAX_FRAMES = 24
 
-SUMMARIZE_PROMPT = """You are summarizing a YouTube video for a knowledge vault. The note will be read by future-Claude (an AI), not by a human. Optimize for AI retrieval.
-
-LANGUAGE: Write all prose content in Brazilian Portuguese (pt-BR) - correct grammar, natural phrasing, standard orthography (post-1990 Acordo Ortográfico). This applies regardless of the transcript's source language (English, Spanish, etc.): translate and paraphrase into pt-BR, don't leave sections in the original language. Do not produce a stiff, literal/machine-translated Portuguese - write as a fluent native speaker would. Exception: verbatim quotes in "Notable Quotes" stay in the original language, followed by a pt-BR translation in parentheses. Section headers below stay in English (matches the rest of the vault's note templates); only the bracketed content under each header is pt-BR prose.
-
-VIDEO TITLE: {title}
-CHANNEL: {channel}
-PUBLISHED: {published}
-
-TRANSCRIPT (first {tx_chars} chars):
-\"\"\"
-{transcript}
-\"\"\"
-
-{comments_section}
-
-Produce EXACTLY this structure (markdown):
-
-## TL;DR
-[2-3 frases em português (pt-BR) capturando a tese central ou o valor do vídeo.]
-
-## Key Points
-- [Afirmação, ideia ou método concreto do vídeo, em português (pt-BR)]
-- [...continue for 5-12 bullets covering the actual substance, not filler]
-
-## Notable Quotes
-- "[Verbatim quote in the original language]" (tradução: "[pt-BR translation]") - [locate with timestamp/context if you can; max 5 quotes]
-
-## Themes & Topics
-[2-3 frases em português (pt-BR) nomeando os temas/domínios mais amplos que o vídeo toca]
-
-## Comment Sentiment
-[If comments were provided: 1-2 frases em português (pt-BR) resumindo a reação da audiência. Note dominant praise, criticism, or question patterns. If no comments provided, write "Nenhum comentário disponível."]
-
-## Worth Following Up On
-- [Pontos específicos mencionados que valeriam uma chamada /research mais profunda depois, em português (pt-BR)]
-
-Rules:
-- Write in Brazilian Portuguese throughout, per LANGUAGE above (verbatim quotes excepted). Correct grammar, no anglicisms/calques, no machine-translation artifacts.
-- Be specific. "Fala sobre IA" is useless to future-Claude. "Argumenta que janelas de contexto de LLM acima de 1M tokens degradam a qualidade do raciocínio após 200k tokens" is useful.
-- Don't pad. If a section is genuinely thin, write one bullet and move on.
-- Don't add commentary outside this structure.
-"""
+SUMMARY_PLACEHOLDER = (
+    "<!-- CLAUDE: read the transcript (and comments, if present) in the "
+    "TRANSCRIPT-FOR-CLAUDE block this script printed (stderr), then replace this "
+    "comment with the summary. Structure and the Brazilian Portuguese language "
+    "rule are in commands/youtube.md step 4 - follow them exactly. -->"
+)
 
 
 def _fmt_ts(seconds: float) -> str:
@@ -86,7 +57,7 @@ def _extract_visual(video_id: str, title: str, max_frames: int) -> dict | None:
 
     Returns {frame_dir, frames, hero_rel_paths, count} or None if the visual layer
     could not run (missing binaries, download failure). Never raises - the visual
-    layer is additive; transcript summary still saves on its own.
+    layer is additive; the note still saves on its own.
     """
     url = f"https://www.youtube.com/watch?v={video_id}"
     work_dir = Path(tempfile.mkdtemp(prefix=f"youtube-visual-{video_id}-"))
@@ -124,7 +95,7 @@ def _extract_visual(video_id: str, title: str, max_frames: int) -> dict | None:
     except video_frames.FrameError as e:
         print(f"[/youtube] Visual layer skipped: {e}", file=sys.stderr)
         return None
-    except Exception as e:  # noqa: BLE001 - visual layer must never break the summary
+    except Exception as e:  # noqa: BLE001 - visual layer must never break the note
         print(f"[/youtube] Visual layer error ({type(e).__name__}): {e}", file=sys.stderr)
         return None
 
@@ -162,11 +133,11 @@ def main(argv: list[str]) -> int:
     channel = (metadata or {}).get("channel") or "(unknown channel)"
     published = (metadata or {}).get("published_at") or "(unknown date)"
 
-    # Visual layer (opt-in). Run before the summary so failures surface early.
+    # Visual layer (opt-in). Run before the save so failures surface early.
     visual = _extract_visual(video_id, title, args.max_frames) if args.visual else None
 
     if transcript:
-        TX_LIMIT = 24000  # ~6k tokens - plenty for grok-4 context
+        TX_LIMIT = 24000  # plenty for Claude to read directly, keeps the block manageable
         tx_truncated = transcript[:TX_LIMIT]
         tx_note = "" if len(transcript) <= TX_LIMIT else f"\n\n[Transcript truncated at {TX_LIMIT} chars from total {len(transcript)} chars]"
     else:
@@ -179,33 +150,17 @@ def main(argv: list[str]) -> int:
         for c in comments[:15]:
             comments_section += f"- {c['author']} ({c['like_count']} 👍): {c['text'][:200]}\n"
 
-    prompt = SUMMARIZE_PROMPT.format(
-        title=title,
-        channel=channel,
-        published=published,
-        tx_chars=len(tx_truncated),
-        transcript=tx_truncated + tx_note,
-        comments_section=comments_section,
-    )
-
-    print("[/youtube] Summarizing via Grok...\n", file=sys.stderr)
-    try:
-        result = grok.call(prompt, command="youtube", max_output_tokens=3000)
-    except Exception as e:
-        print(f"\n❌ /youtube summarize failed: {e}", file=sys.stderr)
-        return 1
-
     print(f"# {title}")
     print(f"**Channel:** {channel} · **Published:** {published}")
     print(f"**URL:** https://www.youtube.com/watch?v={video_id}\n")
-    print(result["text"])
 
-    # AI-first save
+    # AI-first save (skeleton - Claude fills in ## Summary next, per commands/youtube.md)
     now = datetime.now()
     preamble = (
         f"For future Claude: This note is a transcript-grounded summary of YouTube video \"{title}\" "
         f"by {channel} (published {published}), processed on {now.strftime('%Y-%m-%d %H:%M')}. "
-        f"Transcript was extracted via youtube-transcript-api and summarized via Grok. "
+        f"Transcript was extracted via youtube-transcript-api. The Summary below was written "
+        f"directly by Claude reading the transcript in-session - no external LLM API call. "
         f"Quotes are sourced from the transcript verbatim where attributed. Use Worth Following Up On bullets to spawn deeper research."
     )
     if visual:
@@ -230,7 +185,7 @@ def main(argv: list[str]) -> int:
         "visual": bool(visual),
         "frame-count": visual["count"] if visual else None,
         "tags": ["research", "youtube"] + ((metadata or {}).get("tags") or [])[:5],
-        "cost-usd": round(result["cost_usd"], 4),
+        "cost-usd": 0.0,
         "ai-first": True,
     }
     note_body = (
@@ -240,7 +195,7 @@ def main(argv: list[str]) -> int:
         f"- **Channel:** {channel}\n"
         f"- **Published:** {published}\n"
         f"- **URL:** https://www.youtube.com/watch?v={video_id}\n\n"
-        f"## Summary\n\n{result['text']}\n"
+        f"## Summary\n\n{SUMMARY_PLACEHOLDER}\n"
     )
     if visual:
         note_body += "\n" + _visual_note_section(visual)
@@ -249,11 +204,13 @@ def main(argv: list[str]) -> int:
     vault.print_save_links(path)
     vault.append_to_log(f"youtube on \"{title}\" - saved to {path.name}")
 
+    _print_transcript_for_claude(path, tx_truncated + tx_note, comments_section)
+
     if visual:
         _print_frames_for_claude(path, visual)
 
     print(
-        f"---\n[cost: ${result['cost_usd']:.4f} · transcript: {len(transcript) if transcript else 0} chars"
+        f"---\n[transcript: {len(transcript) if transcript else 0} chars"
         f" · comments: {len(comments)}"
         + (f" · frames: {visual['count']}" if visual else "")
         + "]",
@@ -287,13 +244,32 @@ def _visual_note_section(visual: dict) -> str:
     return "\n".join(lines)
 
 
+def _print_transcript_for_claude(note_path: Path, transcript_text: str, comments_section: str) -> None:
+    """Emit a machine-readable block with the transcript for Claude to read and
+    summarize itself, then telling it which note to edit with the result."""
+    payload = {
+        "note_path": str(note_path),
+        "instruction": (
+            "Read the transcript (and comments, if present) below, write the "
+            "## Summary content per commands/youtube.md step 4 (structure + the "
+            "Brazilian Portuguese language rule), then Edit the note at note_path: "
+            "replace the SUMMARY_PLACEHOLDER comment under '## Summary' with the "
+            "finished summary."
+        ),
+        "transcript": transcript_text,
+        "comments": comments_section or None,
+    }
+    print("\n=== TRANSCRIPT-FOR-CLAUDE ===", file=sys.stderr)
+    print(json.dumps(payload, indent=2, ensure_ascii=False), file=sys.stderr)
+    print("=== END TRANSCRIPT-FOR-CLAUDE ===", file=sys.stderr)
+
+
 def _print_frames_for_claude(note_path: Path, visual: dict) -> None:
     """Emit a machine-readable block telling Claude which frames to read and which
     note to update. Claude reads the frames with its own vision, then edits the
     note's Visual notes section."""
     payload = {
         "note_path": str(note_path),
-        "frame_dir": visual["frame_dir"],
         "instruction": (
             "Read each frame below (they are local JPGs), then Edit the note at "
             "note_path: replace the <!-- CLAUDE: ... --> comment in the '## Visual "

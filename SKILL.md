@@ -983,17 +983,17 @@ Plain English: "notebooklm this", "ask my notebook about X", "ground a research 
 
 ### `/youtube [url] [--visual]`
 
-**Extract and summarize a YouTube video.** Transcript (free, no API key) + metadata + top comments (Data API v3, optional) → summarized via Grok. Add `--visual` to also *watch* the video: scene-change frame extraction Claude reads with its own vision.
+**Extract and summarize a YouTube video.** Transcript (free, no API key) + metadata + top comments (Data API v3, optional). No LLM API call: Claude reads the transcript itself and writes the summary, the same way it reads frames for `--visual`. Add `--visual` to also *watch* the video: scene-change frame extraction Claude reads with its own vision.
 
 Steps:
 1. Parse video ID from URL or 11-char ID
 2. Run `uv run -m scripts.research.youtube_extract "<url>"` (add `--visual` for the frame layer, `--max-frames N` to cap frames read, default 24)
 3. Fetches transcript via `youtube-transcript-api`
 4. If `YOUTUBE_API_KEY` set: also fetches title, channel, view counts, top comments
-5. Sends transcript + comments to Grok for AI-first summary: TL;DR, Key Points, Notable Quotes, Themes, Comment Sentiment, Worth Following Up On
-6. **Default save: auto-saves** to `Research/YouTube/YYYY-MM-DD - <video-title-slug>.md`
+5. Saves a skeleton AI-first note (frontmatter + `## Video` + a placeholder `## Summary`) and prints a `TRANSCRIPT-FOR-CLAUDE` block - Claude reads the transcript + comments there and writes the summary directly (TL;DR, Key Points, Notable Quotes, Themes, Comment Sentiment, Worth Following Up On, all pt-BR prose), then edits it into the note, replacing the placeholder
+6. **Default save: auto-saves** to `Research/YouTube/YYYY-MM-DD - <video-title-slug>.md`, before the summary step - the summary edit lands moments later in the same turn
 
-**`--visual` layer:** downloads the video (yt-dlp, <=720p) and extracts one frame per scene change (ffmpeg scene detection, not a fixed timer), so on-screen text, code, diagrams, slides, UI, and b-roll are captured. Hero frames are copied into `Research/YouTube/attachments/<slug>/` and embedded in the note; the full keyframe set is left on disk. The script prints a `FRAMES-FOR-CLAUDE` block - Claude then reads those frames (its own vision, no extra API call) and fills the note's `## Visual notes` section keyed by timestamp. Requires `yt-dlp` + `ffmpeg` on PATH; if missing or download fails, the visual layer is skipped and the transcript summary still saves. The pipeline is ported from claude-watch/claude-video (MIT).
+**`--visual` layer:** downloads the video (yt-dlp, <=720p) and extracts one frame per scene change (ffmpeg scene detection, not a fixed timer), so on-screen text, code, diagrams, slides, UI, and b-roll are captured. Hero frames are copied into `Research/YouTube/attachments/<slug>/` and embedded in the note; the full keyframe set is left on disk. The script prints a `FRAMES-FOR-CLAUDE` block - Claude then reads those frames (its own vision, no extra API call) and fills the note's `## Visual notes` section keyed by timestamp. Requires `yt-dlp` + `ffmpeg` on PATH; if missing or download fails, the visual layer is skipped and the note still saves. The pipeline is ported from claude-watch/claude-video (MIT).
 
 Plain English: "summarize this YouTube video", "extract this video", "watch this video", "what's on screen", or just paste a YouTube URL with a question. Use `--visual` when the ask is about what is *shown*, not just said.
 
@@ -1021,7 +1021,7 @@ Spotify URLs are not supported (DRM blocks audio + transcript access). If no tra
 
 ### Cost tracking
 
-`/x-read`, `/x-pulse`, `/youtube` (Grok summarize), `/podcast` (Grok summarize), and the Perplexity calls in `/research`/`/research-deep` log usage to `~/.research-toolkit/usage.log`. View monthly totals via:
+`/x-read`, `/x-pulse`, `/podcast` (Grok summarize), and the Perplexity calls in `/research`/`/research-deep` log usage to `~/.research-toolkit/usage.log`. `/youtube` makes no LLM API call, so it logs nothing there. View monthly totals via:
 ```bash
 uv run python -c "from scripts.research.lib.usage import month_total; t,c = month_total(); print(f'\${t:.2f} across {c} calls')"
 ```
