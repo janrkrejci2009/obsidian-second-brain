@@ -7,7 +7,40 @@ Metadata + comments require YOUTUBE_API_KEY (free tier of YouTube Data API v3).
 import re
 from typing import Any
 
-from .config import YOUTUBE_API_KEY
+from .config import WEBSHARE_PROXY_PASSWORD, WEBSHARE_PROXY_USERNAME, YOUTUBE_API_KEY, YOUTUBE_PROXY_URL
+
+
+def _build_proxy_config():
+    """Build a youtube-transcript-api ProxyConfig from env vars, or None if unset.
+
+    Prefers Webshare (rotating residential IPs + built-in retry-on-block - the
+    workaround youtube-transcript-api's own docs recommend for IpBlocked/
+    RequestBlocked errors) over a generic proxy URL. Returns None when neither
+    is configured, which is the common case and behaves exactly as before.
+    """
+    user, pw = WEBSHARE_PROXY_USERNAME(), WEBSHARE_PROXY_PASSWORD()
+    if user and pw:
+        from youtube_transcript_api.proxies import WebshareProxyConfig
+        return WebshareProxyConfig(proxy_username=user, proxy_password=pw)
+    url = YOUTUBE_PROXY_URL()
+    if url:
+        from youtube_transcript_api.proxies import GenericProxyConfig
+        return GenericProxyConfig(http_url=url, https_url=url)
+    return None
+
+
+def get_proxy_url_for_ytdlp() -> str | None:
+    """A plain proxy URL string for yt-dlp's --proxy flag, or None if unset.
+
+    Reuses the same env vars as the transcript proxy so one proxy purchase
+    covers both the transcript fetch and the --visual video download - both
+    hit the same YouTube IP-block wall, just via different libraries.
+    """
+    user, pw = WEBSHARE_PROXY_USERNAME(), WEBSHARE_PROXY_PASSWORD()
+    if user and pw:
+        from youtube_transcript_api.proxies import WebshareProxyConfig
+        return WebshareProxyConfig(proxy_username=user, proxy_password=pw).url
+    return YOUTUBE_PROXY_URL() or None
 
 
 def parse_video_id(url_or_id: str) -> str:
@@ -39,7 +72,7 @@ def get_transcript(video_id: str) -> str | None:
     except ImportError:
         return None
     try:
-        api = YouTubeTranscriptApi()
+        api = YouTubeTranscriptApi(proxy_config=_build_proxy_config())
         transcript_list = api.list(video_id)
         try:
             transcript = transcript_list.find_transcript(TRANSCRIPT_LANGUAGE_PREFERENCE)

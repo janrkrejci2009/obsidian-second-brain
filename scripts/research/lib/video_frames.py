@@ -40,12 +40,17 @@ def _require(binary: str) -> None:
 # Download
 # --------------------------------------------------------------------------- #
 
-def download_video(url: str, out_dir: Path) -> dict:
+def download_video(url: str, out_dir: Path, proxy: str | None = None) -> dict:
     """Download a video via yt-dlp (<=720p, merged to mp4). Returns paths + info.
 
     yt-dlp may exit non-zero when a subtitle variant fails (e.g. 429) even though
     the video downloaded fine, so success is judged by "video file present", not
     the exit code.
+
+    :param proxy: optional proxy URL (http://user:pass@host:port or socks5://...)
+        for yt-dlp's --proxy flag. Same env-configured proxy used for transcript
+        fetching (see lib/youtube.py get_proxy_url_for_ytdlp) - a 403 here is
+        usually the same YouTube IP block that blocks the transcript API.
     """
     _require("yt-dlp")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -59,9 +64,10 @@ def download_video(url: str, out_dir: Path) -> dict:
         "--write-info-json",
         "--no-playlist",
         "--ignore-errors",
-        "-o", output_template,
-        "--", url,
     ]
+    if proxy:
+        cmd += ["--proxy", proxy]
+    cmd += ["-o", output_template, "--", url]
     # A bound on the one call in this pipeline that talks to an arbitrary remote
     # host. Without it a stalled CDN hangs forever with no exception to catch, so
     # the caller cannot fall back - it just never returns. FrameError is already

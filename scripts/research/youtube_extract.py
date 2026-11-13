@@ -62,8 +62,13 @@ def _extract_visual(video_id: str, title: str, max_frames: int) -> dict | None:
     url = f"https://www.youtube.com/watch?v={video_id}"
     work_dir = Path(tempfile.mkdtemp(prefix=f"youtube-visual-{video_id}-"))
     try:
-        print("[/youtube] Downloading video for scene extraction...", file=sys.stderr)
-        dl = video_frames.download_video(url, work_dir)
+        proxy = youtube.get_proxy_url_for_ytdlp()
+        print(
+            "[/youtube] Downloading video for scene extraction"
+            + (" (via proxy)..." if proxy else "..."),
+            file=sys.stderr,
+        )
+        dl = video_frames.download_video(url, work_dir, proxy=proxy)
         print("[/youtube] Extracting scene-change frames...", file=sys.stderr)
         frames = video_frames.extract_scene_change(
             dl["video_path"], work_dir / "frames", max_frames=max_frames

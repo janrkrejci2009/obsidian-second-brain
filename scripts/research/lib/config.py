@@ -30,6 +30,9 @@ XAI_API_KEY = lambda: get_required("XAI_API_KEY")
 PERPLEXITY_API_KEY = lambda: get_required("PERPLEXITY_API_KEY")
 GEMINI_API_KEY = lambda: get_required("GEMINI_API_KEY")
 YOUTUBE_API_KEY = lambda: get_optional("YOUTUBE_API_KEY", "")
+WEBSHARE_PROXY_USERNAME = lambda: get_optional("WEBSHARE_PROXY_USERNAME", "")
+WEBSHARE_PROXY_PASSWORD = lambda: get_optional("WEBSHARE_PROXY_PASSWORD", "")
+YOUTUBE_PROXY_URL = lambda: get_optional("YOUTUBE_PROXY_URL", "")
 
 # Tavily (optional). Declared here for parity with the other providers, but the
 # free-track source clients (lib/sources/tavily.py, lib/web_reader.py) read these
